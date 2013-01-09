@@ -56,7 +56,7 @@ func makeFieldTypeByType(typ reflect.Type) *fieldType {
 		return &fieldType{ typ.Kind(), []*fieldType{ elemType } }
 
 	case reflect.Ptr:
-		return makeFieldTypeByType(typ.Elem())
+		return &fieldType{ reflect.Ptr, []*fieldType { makeFieldTypeByType(typ.Elem()) } }
 
 	case reflect.Struct:
 		var elems = make([]*fieldType, 0, typ.NumField())
@@ -223,15 +223,18 @@ func decodeField(field interface{}, ft *fieldType, reader *bufio.Reader) {
 		resultv.Elem().Set(slicev.Slice(0, elemCount))
 
 	case reflect.Ptr:
-		var target = reflect.Indirect(reflect.ValueOf(field)).Interface()
-		decodeField(target, ft.Elem[0], reader)
+		var val = reflect.ValueOf(field)
+		var target = reflect.Indirect(val)
+		if target.IsNil() {
+			target.Set(reflect.New(target.Type().Elem()))
+		}
+		decodeField(target.Interface(), ft.Elem[0], reader)
 
 	case reflect.Struct:
-		fmt.Printf("Decode struct: %#v (%s)\n", field, ft)
-		var val = reflect.Indirect(reflect.ValueOf(field))
+		var val = reflect.ValueOf(field)
+		val = reflect.Indirect(val)
 		for i := 0; i < val.NumField(); i++ {
 			var fieldVal = val.Field(i).Addr()
-			fmt.Printf("Field: %v (%s): %v\n", fieldVal, ft.Elem[i], fieldVal.IsNil())
 			decodeField(fieldVal.Interface(), ft.Elem[i], reader)
 		}
 

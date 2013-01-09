@@ -22,6 +22,9 @@ type SimpleStruct struct {
 type NestedStruct struct {
 	Name string
 	Ages []uint8
+	Embedded SimpleStruct
+	Embeddeds []SimpleStruct
+	Simple *SimpleStruct
 	Simples []*SimpleStruct
 }
 	
@@ -306,25 +309,62 @@ func TestNestedStruct(test *testing.T) {
 	var ns = NestedStruct{ 
 		Name: "Some Guys",
 		Ages: []uint8{ 23, 91, 0 },
+		Embedded: *simples[0],
+		Embeddeds: []SimpleStruct { 
+			*simples[0], 
+			*simples[1],
+			*simples[2],
+		},
+		Simple: simples[1],
 		Simples: simples,
 	}
 	var ft = makeFieldType(ns)
+
 	encodeField(&ns, ft, writer)
 	writer.Flush()
-
-	test.Errorf("Enc: %v\n", buf.Bytes())
 
 	var dec = NestedStruct{}
 	decodeField(&dec, ft, reader)
 
+	if dec.Name != "Some Guys" {
+		test.Errorf("Wrong name: %v\n", dec.Name)
+	}
 
-	// if dec.Name != "Brendon" {
-	// 	test.Errorf("Wrong name: %v\n", dec.Name)
-	// }
+	if !compareByteArrays(dec.Ages, []uint8{ 23, 91, 0 }) {
+		test.Errorf("Wrong ages: %v\n", dec.Ages)
+	}	
 
-	// if dec.Count != 31 {
-	// 	test.Errorf("Wrong count: %v\n", dec.Count)
-	// }	
+	var testSimple = func(tag string, st *SimpleStruct, name string, count uint32) {
+		if st.Name != name { 
+			test.Errorf("Wrong name for %s: %v\n", tag, st.Name)
+		}
+
+		if st.Count != count { 
+			test.Errorf("Wrong count for %s: %v\n", tag, st.Count)
+		}
+	}
+
+	testSimple("embedded", &dec.Embedded, "Brendon", 31)
+
+	if len(dec.Embeddeds) != 3 {
+		test.Errorf("Wrong embeddeds length: %v\n", len(dec.Embeddeds))
+	}
+
+	testSimple("embeddeds[0]", &dec.Embeddeds[0], "Brendon", 31)
+	testSimple("embeddeds[1]", &dec.Embeddeds[1], "Ben", 26)
+	testSimple("embeddeds[2]", &dec.Embeddeds[2], "Nai", 32)
+
+	testSimple("simple", dec.Simple, "Ben", 26)
+
+	if len(dec.Simples) != 3 {
+		test.Errorf("Wrong simples length: %v\n", len(dec.Simples))
+	}
+
+	testSimple("simples[0]", dec.Simples[0], "Brendon", 31)
+	testSimple("simples[1]", dec.Simples[1], "Ben", 26)
+	testSimple("simples[2]", dec.Simples[2], "Nai", 32)
+
+
 }
 
 
