@@ -609,7 +609,7 @@ func TestNestedStructAsMap(test *testing.T) {
 		test.Errorf("Wrong name in map-decoded embeddeds[1]: %v", embedded["Name"])
 	}
 
-	var simple = *dec["Simple"].(*map[string]interface{})
+	var simple = dec["Simple"].(map[string]interface{})
 	if len(simple) != 2 {
 		test.Errorf("Wrong field count in map-decoded simple: %v", simple)
 	}
@@ -623,7 +623,7 @@ func TestNestedStructAsMap(test *testing.T) {
 		test.Errorf("Wrong struct count in map-decoded simples: %v", simples)
 	}
 
-	simple = *simples[1].(*map[string]interface{})
+	simple = simples[1].(map[string]interface{})
 	if simple["Name"] != "Ben" {
 		test.Errorf("Wrong name in map-decoded simples[1]: %v", simple["Name"])
 	}

@@ -418,7 +418,7 @@ func createMapValue(ft *fieldType) interface{} {
 
 	case reflect.Ptr:
 		var subVal = createMapValue(ft.Elem[0])
-		return &subVal
+		return subVal
 
 	case reflect.Struct:
 		var val = make(map[string]interface{})
