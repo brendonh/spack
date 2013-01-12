@@ -477,6 +477,40 @@ func TestFieldTypeFieldTypeEncode(test *testing.T) {
 	}
 }
 
+
+func TestMap(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var orig = map[string]*SimpleStruct {
+		"Brend": &SimpleStruct { "Brendon", 31 },
+		"Nai": &SimpleStruct{ "Nai Yu", 32 },
+	}
+
+	var ft = makeFieldType(orig)
+
+	encodeField(orig, ft, writer)
+	writer.Flush()
+
+	var dec = make(map[string]*SimpleStruct)
+
+	decodeField(dec, ft, reader)
+
+	if len(dec) != 2 {
+		test.Errorf("Wrong key count for decoded map: %v\n", dec)
+	}
+
+	if dec["Brend"].Name != "Brendon" {
+		test.Errorf("Wrong name for decoded Brend: %v\n", dec["Brend"])
+	}
+
+	if dec["Nai"].Name != "Nai Yu" {
+		test.Errorf("Wrong name for decoded Nai: %v\n", dec["Brend"])
+	}
+}
+
+
 func compareByteArrays(a []byte, b []byte) bool {
 	if len(a) != len(b) {
 		return false

@@ -59,7 +59,7 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 
 	case reflect.Slice:
 		var elemType = makeFieldTypeByType(typ.Elem(), top, seen)
-		return &fieldType{ uint8(typ.Kind()), []*fieldType{ elemType } }
+		return &fieldType{ uint8(reflect.Slice), []*fieldType{ elemType } }
 
 	case reflect.Ptr:
 
@@ -69,7 +69,7 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 					return &fieldType{ uint8(reflect.Ptr), 
 						[]*fieldType{ &fieldType{ RECURSE, nil } } }
 				}
-				panic(fmt.Sprintf("Recursive type! %v, %v (top: %v)", typ, seenType))
+				panic(fmt.Sprintf("Recursive type! %v, %v", typ, seenType))
 			}
 		}
 
@@ -86,9 +86,17 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 			elems = append(elems, ft)
 		}
 		return &fieldType{ uint8(reflect.Struct), elems }
+
+	case reflect.Map:
+		var keyType = makeFieldTypeByType(typ.Key(), top, seen)
+		var valType = makeFieldTypeByType(typ.Elem(), top, seen)
+		return &fieldType{ uint8(reflect.Map), []*fieldType{ keyType, valType } } 
+
+	default:
 	}
 
 	panic(fmt.Sprintf("Can't make field type for %v\n", typ.Kind()))
+
 }
 
 
@@ -143,6 +151,17 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 		writeLength(sliceLen, writer)
 		for i := 0; i < sliceLen; i++ {
 			encodeFieldInner(val.Index(i).Interface(), ft.Elem[0], ftTop, writer)
+		}
+
+	case reflect.Map:
+		var val = reflect.ValueOf(field)
+		var keyCount = val.Len()
+		writeLength(keyCount, writer)
+		var keys = val.MapKeys()
+		for _, key := range keys {
+			encodeFieldInner(key.Interface(), ft.Elem[0], ftTop, writer)
+			var value = val.MapIndex(key)
+			encodeFieldInner(value.Interface(), ft.Elem[1], ftTop, writer)
 		}
 
 	case reflect.Ptr:
@@ -257,6 +276,25 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 		}
 
 		resultv.Elem().Set(slicev.Slice(0, elemCount))
+
+	case reflect.Map:
+		keyCount64, err := binary.ReadUvarint(reader)
+		if err != nil {
+			panic(fmt.Sprintf("Couldn't read key count: %v\n", err))
+		}
+		var keyCount = int(keyCount64)
+		var resultv = reflect.ValueOf(field)
+		var keyt = resultv.Type().Key()
+		var valt = resultv.Type().Elem()
+
+		for i := 0; i < keyCount; i++ {
+			var keyp = reflect.New(keyt)
+			decodeFieldInner(keyp.Interface(), ft.Elem[0], ftTop, reader)
+			var valp = reflect.New(valt)
+			decodeFieldInner(valp.Interface(), ft.Elem[1], ftTop, reader)
+			resultv.SetMapIndex(keyp.Elem(), valp.Elem())
+		}
+
 
 	case reflect.Ptr:
 		c, err := reader.ReadByte()
