@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"reflect"
+	"encoding/json"
 )
 
 
@@ -184,6 +185,7 @@ func TestByteSlice(test *testing.T) {
 	var ft = &fieldType{ 
 		uint8(reflect.Slice), 
 		[]*fieldType{ kindType(reflect.Uint8) },
+		"",
 	}
 
 	var orig = []uint8{ 1, 2, 34, 250 }
@@ -205,7 +207,7 @@ func TestStringSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.String) } }
+	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.String) }, "" }
 	var orig = []string{ "one", "two", "thirty four" }
 	var dec = make([]string, 0)
 
@@ -224,8 +226,8 @@ func TestSliceSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft0 = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.Uint8) } }
-	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ ft0 } }
+	var ft0 = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.Uint8) }, "" }
+	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ ft0 }, "" }
 
 	var orig = [][]uint8{ 
 		[]uint8 { 1, 2, 3 },
@@ -257,7 +259,8 @@ func TestPointer(test *testing.T) {
 
 	var ft = &fieldType{ 
 		uint8(reflect.Ptr), 
-		[]*fieldType{ &fieldType{ uint8(reflect.Uint8), nil } },
+		[]*fieldType{ &fieldType{ uint8(reflect.Uint8), nil, "" } },
+		"",
 	}
 
 	var orig *uint8 = new(uint8)
@@ -511,6 +514,129 @@ func TestMap(test *testing.T) {
 }
 
 
+func TestStructAsMap(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var st = SimpleStruct{ "Brendon", 31 }
+	var ft = makeFieldType(st)
+	encodeField(&st, ft, writer)
+	writer.Flush()
+
+	var dec = make(map[string]interface{})
+	decodeField(dec, ft, reader)
+
+	if len(dec) != 2 {
+		test.Errorf("Wrong field count in map-decoded struct: %v\n", dec)
+	}
+
+	if dec["Name"] != "Brendon" {
+		test.Errorf("Wrong name in map-decoded struct: %v\n", dec["Name"])
+	}
+
+	if dec["Count"] != uint32(31) {
+		test.Errorf("Wrong count in map-decoded struct: %v\n", dec["Count"])
+	}
+}
+
+
+
+func TestNestedStructAsMap(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var initSimples = []*SimpleStruct{ 
+		&SimpleStruct{ "Brendon", 31 },
+		&SimpleStruct{ "Ben", 26 },
+		&SimpleStruct{ "Nai", 32 },
+	}
+
+	var ns = NestedStruct{ 
+		Name: "Some Guys",
+		Ages: []uint8{ 23, 91, 0 },
+		Embedded: *initSimples[0],
+		Embeddeds: []SimpleStruct { 
+			*initSimples[0], 
+			*initSimples[1],
+			*initSimples[2],
+		},
+		Simple: initSimples[1],
+		Simples: initSimples,
+	}
+
+	var ft = makeFieldType(ns)
+	encodeField(&ns, ft, writer)
+	writer.Flush()
+
+	var dec = make(map[string]interface{})
+	decodeField(dec, ft, reader)
+
+	if len(dec) != 6 {
+		test.Errorf("Wrong field count in map-decoded struct: %v", dec["Name"])
+	}
+
+	if dec["Name"] != "Some Guys" {
+		test.Errorf("Wrong name in map-decoded struct: %v", dec["Name"])
+	}
+	
+	var ages = dec["Ages"].([]interface{})
+	if len(ages) != 3 {
+		test.Errorf("Wrong ages count in map-decoded struct", ages)
+	}
+
+	if ages[1].(uint8) != 91 {
+		test.Errorf("Wrong age in map-decoded struct", ages[1])
+	}
+
+	var embedded = dec["Embedded"].(map[string]interface{})
+	if len(embedded) != 2 {
+		test.Errorf("Wrong field count in map-decoded embedded: %v", embedded)
+	}
+
+	if embedded["Name"] != "Brendon" {
+		test.Errorf("Wrong name in map-decoded embedded: %v", embedded["Name"])
+	}
+
+	var embeddeds = dec["Embeddeds"].([]interface{})
+	if len(embeddeds) != 3 {
+		test.Errorf("Wrong struct count in map-decoded embeddeds: %v", embeddeds)
+	}
+
+	embedded = embeddeds[1].(map[string]interface{})
+	if embedded["Name"] != "Ben" {
+		test.Errorf("Wrong name in map-decoded embeddeds[1]: %v", embedded["Name"])
+	}
+
+	var simple = *dec["Simple"].(*map[string]interface{})
+	if len(simple) != 2 {
+		test.Errorf("Wrong field count in map-decoded simple: %v", simple)
+	}
+
+	if simple["Name"] != "Ben" {
+		test.Errorf("Wrong name in map-decoded simple: %v", simple["Name"])
+	}
+
+	var simples = dec["Simples"].([]interface{})
+	if len(simples) != 3 {
+		test.Errorf("Wrong struct count in map-decoded simples: %v", simples)
+	}
+
+	simple = *simples[1].(*map[string]interface{})
+	if simple["Name"] != "Ben" {
+		test.Errorf("Wrong name in map-decoded simples[1]: %v", simple["Name"])
+	}
+
+	jsonDec, err := json.MarshalIndent(dec, "", "  ")
+	if err != nil {
+		test.Errorf("Couldn't json encode dec: %v", err)
+	}
+
+	test.Logf("Map decode: %s", jsonDec)
+}
+
+
 func compareByteArrays(a []byte, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -561,6 +687,6 @@ func compareFieldTypes(a *fieldType, b *fieldType) bool {
 }
 
 func kindType(kind reflect.Kind) *fieldType {
-	return &fieldType{ uint8(kind), nil }
+	return &fieldType{ uint8(kind), nil, "" }
 }
 

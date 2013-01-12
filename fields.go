@@ -11,6 +11,7 @@ import (
 type fieldType struct {
 	Kind uint8
 	Elem []*fieldType
+	Label string
 }
 
 type typeSet []reflect.Type
@@ -28,7 +29,7 @@ func (ft *fieldType) String() string {
 		}
 		inner = fmt.Sprintf("[ %s ]", strings.Join(bits, ", "))
 	}
-	return fmt.Sprintf("{ %v, %v }", ft.Kind, inner)
+	return fmt.Sprintf("{ %v, %#v, %v }", ft.Kind, ft.Label, inner)
 }
 
 func makeFieldType(exemplar interface{}) *fieldType {
@@ -48,18 +49,17 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 		reflect.Uint16,
 		reflect.Uint32,
 		reflect.Uint64,
-		reflect.Uintptr,
 		reflect.Float32,
 		reflect.Float64,
 		reflect.Complex64,
 		reflect.Complex128,
 		reflect.Bool,
 		reflect.String:
-		return &fieldType{ uint8(typ.Kind()), nil }
+		return &fieldType{ uint8(typ.Kind()), nil, "" }
 
 	case reflect.Slice:
 		var elemType = makeFieldTypeByType(typ.Elem(), top, seen)
-		return &fieldType{ uint8(reflect.Slice), []*fieldType{ elemType } }
+		return &fieldType{ uint8(reflect.Slice), []*fieldType{ elemType }, "" }
 
 	case reflect.Ptr:
 
@@ -67,7 +67,7 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 			if typ == seenType {
 				if typ == top {
 					return &fieldType{ uint8(reflect.Ptr), 
-						[]*fieldType{ &fieldType{ RECURSE, nil } } }
+						[]*fieldType{ &fieldType{ RECURSE, nil, "" } }, "" }
 				}
 				panic(fmt.Sprintf("Recursive type! %v, %v", typ, seenType))
 			}
@@ -76,21 +76,22 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 		seen = append(seen, typ)
 
 		return &fieldType{ uint8(reflect.Ptr), []*fieldType {
-				makeFieldTypeByType(typ.Elem(), top, seen) } }
+				makeFieldTypeByType(typ.Elem(), top, seen) }, "" }
 
 	case reflect.Struct:
 		var elems = make([]*fieldType, 0, typ.NumField())
 		for i := 0; i < typ.NumField(); i++ {
 			var field = typ.Field(i)
 			var ft = makeFieldTypeByType(field.Type, top, seen)
+			ft.Label = field.Name
 			elems = append(elems, ft)
 		}
-		return &fieldType{ uint8(reflect.Struct), elems }
+		return &fieldType{ uint8(reflect.Struct), elems, "" }
 
 	case reflect.Map:
 		var keyType = makeFieldTypeByType(typ.Key(), top, seen)
 		var valType = makeFieldTypeByType(typ.Elem(), top, seen)
-		return &fieldType{ uint8(reflect.Map), []*fieldType{ keyType, valType } } 
+		return &fieldType{ uint8(reflect.Map), []*fieldType{ keyType, valType }, "" } 
 
 	default:
 	}
@@ -114,7 +115,6 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 		reflect.Uint16,
 		reflect.Uint32,
 		reflect.Uint64,
-		reflect.Uintptr,
 		reflect.Float32,
 		reflect.Float64,
 		reflect.Complex64,
@@ -212,7 +212,6 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 		reflect.Uint16,
 		reflect.Uint32,
 		reflect.Uint64,
-		reflect.Uintptr,
 		reflect.Float32,
 		reflect.Float64,
 		reflect.Complex64,
@@ -258,6 +257,7 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 		*field.(*string) = string(runes)
 
 	case reflect.Slice:
+
 		elemCount64, err := binary.ReadUvarint(reader)
 		if err != nil {
 			panic(fmt.Sprintf("Couldn't read slice length: %v\n", err))
@@ -270,7 +270,15 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 
 		for i := 0; i < elemCount; i++ {
 			slicev = slicev.Slice(0, i)
-			elemp := reflect.New(elemt)
+
+			var elemp reflect.Value
+			if elemt.Kind() == reflect.Interface {
+				elemp = reflect.ValueOf(createMapValue(ft.Elem[0]))
+			} else {
+				elemp = reflect.New(elemt)
+			}
+
+
 			decodeFieldInner(elemp.Interface(), ft.Elem[0], ftTop, reader)
 			slicev = reflect.Append(slicev, elemp.Elem())
 		}
@@ -282,6 +290,7 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 		if err != nil {
 			panic(fmt.Sprintf("Couldn't read key count: %v\n", err))
 		}
+
 		var keyCount = int(keyCount64)
 		var resultv = reflect.ValueOf(field)
 		var keyt = resultv.Type().Key()
@@ -320,9 +329,19 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 	case reflect.Struct:
 		var val = reflect.ValueOf(field)
 		val = reflect.Indirect(val)
-		for i := 0; i < val.NumField(); i++ {
-			var fieldVal = val.Field(i).Addr()
-			decodeFieldInner(fieldVal.Interface(), ft.Elem[i], ftTop, reader)
+
+		if val.Type().Kind() == reflect.Map {
+			for _, fieldFt := range ft.Elem {
+				var key = fieldFt.Label
+				var fieldVal = createMapValue(fieldFt)
+				decodeFieldInner(fieldVal, fieldFt, ftTop, reader)
+				val.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(fieldVal).Elem())
+			}
+		} else {
+			for i := 0; i < val.NumField(); i++ {
+				var fieldVal = val.Field(i).Addr()
+				decodeFieldInner(fieldVal.Interface(), ft.Elem[i], ftTop, reader)
+			}
 		}
 
 	default:
@@ -330,3 +349,82 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 	}
 }
 
+
+func createMapValue(ft *fieldType) interface{} {
+	switch reflect.Kind(ft.Kind) {
+	case reflect.Int8:
+		var val int8
+		return &val
+
+	case reflect.Int16:
+		var val int16
+		return &val
+
+	case reflect.Int32:
+		var val int32
+		return &val
+
+	case reflect.Int64:
+		var val int64
+		return &val
+
+	case reflect.Uint8:
+		var val uint8
+		return &val
+
+	case reflect.Uint16:
+		var val uint16
+		return &val
+
+	case reflect.Uint32:
+		var val uint32
+		return &val
+		
+	case reflect.Uint64:
+		var val uint64
+		return &val
+
+	case reflect.Float32:
+		var val float32
+		return &val
+
+	case reflect.Float64:
+		var val float64
+		return &val
+
+	case reflect.Complex64:
+		var val complex64
+		return &val
+
+	case reflect.Complex128:
+		var val complex128
+		return &val
+
+	case reflect.Bool:
+		var val bool
+		return &val
+
+	case reflect.String:
+		var val string
+		return &val
+
+	case reflect.Slice:
+		var val = make([]interface{}, 0)
+		return &val
+
+	case reflect.Map:
+		var val = make(map[interface{}]interface{})
+		return &val
+
+	case reflect.Ptr:
+		var subVal = createMapValue(ft.Elem[0])
+		return &subVal
+
+	case reflect.Struct:
+		var val = make(map[string]interface{})
+		return &val
+	}
+
+	return nil
+
+}
