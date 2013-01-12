@@ -259,14 +259,16 @@ func TestPointer(test *testing.T) {
 
 	var ft = &fieldType{ 
 		uint8(reflect.Ptr), 
-		[]*fieldType{ &fieldType{ uint8(reflect.Uint8), nil, "" } },
+		[]*fieldType{ 
+			&fieldType{ uint8(reflect.Uint8), nil, "" },
+		},
 		"",
 	}
 
 	var orig *uint8 = new(uint8)
 	*orig = 5
 
-	encodeField(&orig, ft, writer)
+	encodeField(orig, ft, writer)
 	writer.Flush()
 
 	if !compareByteArrays(buf.Bytes(), []byte{ 1, 5 }) {
@@ -541,6 +543,32 @@ func TestStructAsMap(test *testing.T) {
 }
 
 
+func TestMapAsStruct(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var st = map[string]interface{} {
+		"Name": "Brendon",
+		"Count": 31,
+	}
+
+	var ft = makeFieldType(SimpleStruct{})
+	encodeField(&st, ft, writer)
+	writer.Flush()
+
+	var dec = SimpleStruct{}
+	decodeField(&dec, ft, reader)
+
+	if dec.Name != "Brendon" {
+		test.Errorf("Wrong name in struct from map: %v\n", dec.Name)
+	}
+
+	if dec.Count != 31 {
+		test.Errorf("Wrong count in struct from map: %v\n", dec.Count)
+	}
+}
+
 
 func TestNestedStructAsMap(test *testing.T) {
 	var buf = new(bytes.Buffer)
@@ -628,12 +656,67 @@ func TestNestedStructAsMap(test *testing.T) {
 		test.Errorf("Wrong name in map-decoded simples[1]: %v", simple["Name"])
 	}
 
-	jsonDec, err := json.MarshalIndent(dec, "", "  ")
+	_, err := json.MarshalIndent(dec, "", "  ")
 	if err != nil {
 		test.Errorf("Couldn't json encode dec: %v", err)
 	}
+}
 
-	test.Logf("Map decode: %s", jsonDec)
+
+func TestMapAsNestedStruct(test *testing.T) {
+	var input = []byte("{ \"Name\": \"BGH\", \"Ages\": [ 1, 2, 3 ], \"Embedded\": { \"Name\": \"E1\", \"Count\": 1 }, \"Embeddeds\": [ ], \"Simple\": null, \"Simples\": [ { \"Name\": \"S1\", \"Count\": 1 }, {\"Name\": \"S2\", \"Count\": 2 } ] }")
+
+	var init interface{}
+	err := json.Unmarshal(input, &init)
+	if err != nil {
+		test.Errorf("Couldn't unmarshall input data: %v", err)
+	}
+
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var ft = makeFieldType(NestedStruct{})
+	encodeField(init, ft, writer)
+	writer.Flush()
+
+	var dec = NestedStruct{}
+	decodeField(&dec, ft, reader)
+
+	if dec.Name != "BGH" {
+		test.Errorf("Wrong name: %v\n", dec.Name)
+	}
+
+	if !compareByteArrays(dec.Ages, []uint8{ 1, 2, 3 }) {
+		test.Errorf("Wrong ages: %v\n", dec.Ages)
+	}	
+
+	var testSimple = func(tag string, st *SimpleStruct, name string, count uint32) {
+		if st.Name != name { 
+			test.Errorf("Wrong name for %s: %v\n", tag, st.Name)
+		}
+
+		if st.Count != count { 
+			test.Errorf("Wrong count for %s: %v\n", tag, st.Count)
+		}
+	}
+
+	testSimple("embedded", &dec.Embedded, "E1", 1)
+
+	if len(dec.Embeddeds) != 0 {
+		test.Errorf("Wrong embeddeds length: %v\n", len(dec.Embeddeds))
+	}
+
+	if dec.Simple != nil {
+		test.Errorf("Simple not nil: %v\n", dec.Simple)
+	}
+
+	if len(dec.Simples) != 2 {
+		test.Errorf("Wrong simples length: %v\n", len(dec.Simples))
+	}
+
+	testSimple("simples[0]", dec.Simples[0], "S1", 1)
+	testSimple("simples[1]", dec.Simples[1], "S2", 2)
 }
 
 

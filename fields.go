@@ -105,6 +105,7 @@ func encodeField(field interface{}, ft *fieldType, writer *bufio.Writer) {
 	encodeFieldInner(field, ft, ft, writer)
 }
 
+
 func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer *bufio.Writer) {
 	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
@@ -118,11 +119,8 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 		reflect.Float32,
 		reflect.Float64,
 		reflect.Complex64,
-		reflect.Complex128:
-		var err = binary.Write(writer, binary.BigEndian, field)
-		if err != nil {
-			panic(fmt.Sprintf("Fixed size encode error: %v\n", err))
-		}
+		reflect.Complex128: 
+		encodeFixedSize(field, ft.Kind, writer)
 
 	case reflect.Bool:
 		var n int
@@ -169,18 +167,33 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 			encodeFieldInner(field, ftTop, ftTop, writer)
 			return
 		}
+
+		var valType = reflect.TypeOf(field)
 		var val = reflect.ValueOf(field)
-		if val.IsNil() {
+
+		if valType == nil || val.IsNil() {
 			writer.Write([]byte{ 0 })
 		} else {
 			writer.Write([]byte{ 1 })
-			encodeFieldInner(val.Elem().Interface(), ft.Elem[0], ftTop, writer)
+			if valType.Kind() == reflect.Ptr {
+				val = val.Elem()
+			}
+			encodeFieldInner(val.Interface(), ft.Elem[0], ftTop, writer)
 		}
 
 	case reflect.Struct:
 		var val = reflect.Indirect(reflect.ValueOf(field))
-		for i := 0; i < val.NumField(); i++ {
-			encodeFieldInner(val.Field(i).Interface(), ft.Elem[i], ftTop, writer)
+
+		if val.Type().Kind() == reflect.Map {
+			var mapVal = val.Interface().(map[string]interface{})
+			for _, fieldFt := range ft.Elem {
+				var fieldVal = mapVal[fieldFt.Label]
+				encodeFieldInner(fieldVal, fieldFt, ftTop, writer)
+			}
+		} else {
+			for i := 0; i < val.NumField(); i++ {
+				encodeFieldInner(val.Field(i).Interface(), ft.Elem[i], ftTop, writer)
+			}
 		}
 
 	default:
@@ -347,6 +360,55 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 	default:
 		panic(fmt.Sprintf("Unsupported decode kind %v\n", ft.Kind))
 	}
+}
+
+
+func encodeFixedSize(field interface{}, kind uint8, writer *bufio.Writer) {
+
+	// Deal with vague types from JSON data
+	switch field.(type) {
+	case int:
+		field = convertIntToFixedSize(field, reflect.Kind(kind))
+	case float64:
+		field = convertFloatToFixedSize(field, reflect.Kind(kind))
+	}
+
+	var err = binary.Write(writer, binary.BigEndian, field)
+	if err != nil {
+		panic(fmt.Sprintf("Fixed size encode error: %v\n", err))
+	}
+}
+
+func convertIntToFixedSize(field interface{}, kind reflect.Kind) interface{} {
+	var out interface{} = field
+
+	switch kind {
+	case reflect.Int8: out = int8(field.(int))
+	case reflect.Int16: out = int16(field.(int))
+	case reflect.Int32: out = int32(field.(int))
+	case reflect.Int64: out = int64(field.(int))
+	case reflect.Uint8: out = uint8(field.(int))
+	case reflect.Uint16: out = uint16(field.(int))
+	case reflect.Uint32: out = uint32(field.(int))
+	case reflect.Uint64: out = uint64(field.(int))
+	}
+	return out
+}
+
+func convertFloatToFixedSize(field interface{}, kind reflect.Kind) interface{} {
+	var out interface{} = field
+
+	switch kind {
+	case reflect.Int8: out = int8(int(field.(float64)))
+	case reflect.Int16: out = int16(int(field.(float64)))
+	case reflect.Int32: out = int32(int(field.(float64)))
+	case reflect.Int64: out = int64(int(field.(float64)))
+	case reflect.Uint8: out = uint8(int(field.(float64)))
+	case reflect.Uint16: out = uint16(int(field.(float64)))
+	case reflect.Uint32: out = uint32(int(field.(float64)))
+	case reflect.Uint64: out = uint64(int(field.(float64)))
+	}
+	return out
 }
 
 
