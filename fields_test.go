@@ -11,7 +11,7 @@ import (
 
 type TypeTest struct {
 	Exemplar interface{}
-	Kind reflect.Kind
+	Kind uint8
 }
 
 type SimpleStruct struct {
@@ -31,9 +31,9 @@ type NestedStruct struct {
 
 func TestFieldType(test *testing.T) {
 	var tests = []TypeTest {
-		TypeTest{ uint8(123), reflect.Uint8 },
-		TypeTest{ complex64(123), reflect.Complex64 },
-		TypeTest{ "Hello", reflect.String },
+		TypeTest{ uint8(123), uint8(reflect.Uint8) },
+		TypeTest{ complex64(123), uint8(reflect.Complex64) },
+		TypeTest{ "Hello", uint8(reflect.String) },
 	}
 
 	for _, typeTest := range tests {
@@ -44,14 +44,14 @@ func TestFieldType(test *testing.T) {
 	}
 
 	var ft = makeFieldType([]uint8{1, 2, 3})
-	if ft.Kind != reflect.Slice {
+	if ft.Kind != uint8(reflect.Slice) {
 		test.Errorf("Wrong kind for slice: %v\n", ft.Kind)
 	}
 	if len(ft.Elem) != 1 {
 		test.Errorf("Wrong elem length for slice: %d\n", len(ft.Elem))
 	}
 
-	if ft.Elem[0].Kind != reflect.Uint8 {
+	if ft.Elem[0].Kind != uint8(reflect.Uint8) {
 		test.Errorf("Wrong elem for slice: %v\n", ft.Elem[0])
 	}
 	
@@ -181,7 +181,10 @@ func TestByteSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft = &fieldType{ reflect.Slice, []*fieldType{ kindType(reflect.Uint8) } }
+	var ft = &fieldType{ 
+		uint8(reflect.Slice), 
+		[]*fieldType{ kindType(reflect.Uint8) },
+	}
 
 	var orig = []uint8{ 1, 2, 34, 250 }
 	var dec = make([]uint8, 0)
@@ -202,7 +205,7 @@ func TestStringSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft = &fieldType{ reflect.Slice, []*fieldType{ kindType(reflect.String) } }
+	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.String) } }
 	var orig = []string{ "one", "two", "thirty four" }
 	var dec = make([]string, 0)
 
@@ -221,8 +224,8 @@ func TestSliceSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft0 = &fieldType{ reflect.Slice, []*fieldType{ kindType(reflect.Uint8) } }
-	var ft = &fieldType{ reflect.Slice, []*fieldType{ ft0 } }
+	var ft0 = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.Uint8) } }
+	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ ft0 } }
 
 	var orig = [][]uint8{ 
 		[]uint8 { 1, 2, 3 },
@@ -252,14 +255,18 @@ func TestPointer(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var ft = &fieldType{ reflect.Ptr, []*fieldType{ &fieldType{ reflect.Uint8, nil } } }
+	var ft = &fieldType{ 
+		uint8(reflect.Ptr), 
+		[]*fieldType{ &fieldType{ uint8(reflect.Uint8), nil } },
+	}
+
 	var orig *uint8 = new(uint8)
 	*orig = 5
 
 	encodeField(&orig, ft, writer)
 	writer.Flush()
 
-	if !compareByteArrays(buf.Bytes(), []byte{ 5 }) {
+	if !compareByteArrays(buf.Bytes(), []byte{ 1, 5 }) {
 		test.Errorf("Error encoding pointer to uint8: %v", buf.Bytes())
 	}
 
@@ -363,10 +370,112 @@ func TestNestedStruct(test *testing.T) {
 	testSimple("simples[0]", dec.Simples[0], "Brendon", 31)
 	testSimple("simples[1]", dec.Simples[1], "Ben", 26)
 	testSimple("simples[2]", dec.Simples[2], "Nai", 32)
-
-
 }
 
+func TestNilZero(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var ns = NestedStruct{ 
+		Name: "",
+		Ages: []uint8{},
+		Embedded: SimpleStruct{},
+		Embeddeds: []SimpleStruct{},
+		Simple: nil,
+		Simples: nil,
+	}
+	var ft = makeFieldType(ns)
+
+	encodeField(&ns, ft, writer)
+	writer.Flush()
+
+	var dec = NestedStruct{}
+	decodeField(&dec, ft, reader)
+
+	if dec.Embedded.Name != "" {
+		test.Errorf("Empty embedded name not empty: %v", dec.Embedded.Name)
+	}
+
+	if len(dec.Embeddeds) != 0 {
+		test.Errorf("Empty embeddeds length not zero: %#v", dec.Embeddeds)
+	}
+
+	if dec.Simple != nil {
+		test.Errorf("Empty simple not nil: %#v", dec.Simple)
+	}
+
+	if dec.Simples != nil {
+		test.Errorf("Empty simples length not zero: %#v", dec.Simples)
+	}
+}
+
+
+func TestFieldTypeEncodeSimple(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var ft = makeFieldType(SimpleStruct{})
+	var ftft = makeFieldType(ft)
+
+	encodeField(&ft, ftft, writer)
+	writer.Flush()
+
+	var dec = &fieldType{}
+	decodeField(&dec, ftft, reader)
+
+	if !compareFieldTypes(ft, dec) {
+		test.Errorf("Decoded non-matching field type: %v, %v", ft, dec)
+	}
+}
+
+
+func TestFieldTypeEncodeNested(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var ft = makeFieldType(NestedStruct{})
+	var ftft = makeFieldType(ft)
+
+	encodeField(&ft, ftft, writer)
+	writer.Flush()
+
+	var dec = &fieldType{}
+	decodeField(&dec, ftft, reader)
+
+	if !compareFieldTypes(ft, dec) {
+		test.Errorf("Decoded non-matching field type: %v, %v", ft, dec)
+	}
+}
+
+
+func TestFieldTypeFieldTypeEncode(test *testing.T) {
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var ft = makeFieldType(SimpleStruct{})
+	var ftft = makeFieldType(ft)
+	var ftftft = makeFieldType(ftft)
+
+	encodeField(&ftft, ftftft, writer)
+	writer.Flush()
+
+	var dec = &fieldType{}
+	decodeField(&dec, ftftft, reader)
+
+	if !compareFieldTypes(ftft, dec) {
+		test.Errorf("Decoded non-matching field type: %v, %v", ft, dec)
+	}
+
+	// Because why not!
+	var ftftftft = makeFieldType(ftftft)
+	if !compareFieldTypes(ftftft, ftftftft) {
+		test.Errorf("Field type type type mismatch: %v", ftftft, ftftftft)
+	}
+}
 
 func compareByteArrays(a []byte, b []byte) bool {
 	if len(a) != len(b) {
@@ -396,7 +505,28 @@ func compareStringArrays(a []string, b []string) bool {
 	return true
 }
 
+func compareFieldTypes(a *fieldType, b *fieldType) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
+	
+	if len(a.Elem) != len(b.Elem) {
+		return false
+	}
+
+	for i := range a.Elem {
+		if !compareFieldTypes(a.Elem[i], b.Elem[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
 func kindType(kind reflect.Kind) *fieldType {
-	return &fieldType{ kind, nil }
+	return &fieldType{ uint8(kind), nil }
 }
 

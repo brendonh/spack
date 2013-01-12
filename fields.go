@@ -9,9 +9,13 @@ import (
 )
 
 type fieldType struct {
-	Kind reflect.Kind
+	Kind uint8
 	Elem []*fieldType
 }
+
+type typeSet []reflect.Type
+
+const RECURSE = 255
 
 func (ft *fieldType) String() string {
 	var inner string
@@ -27,12 +31,14 @@ func (ft *fieldType) String() string {
 	return fmt.Sprintf("{ %v, %v }", ft.Kind, inner)
 }
 
-
 func makeFieldType(exemplar interface{}) *fieldType {
-	return makeFieldTypeByType(reflect.TypeOf(exemplar))
+	var topType = reflect.TypeOf(exemplar)
+	var seenTypes = make(typeSet, 0)
+	return makeFieldTypeByType(topType, topType, seenTypes)
 }
 
-func makeFieldTypeByType(typ reflect.Type) *fieldType {
+func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fieldType {
+
 	switch typ.Kind() {
 	case reflect.Int8,
 		reflect.Int16,
@@ -49,23 +55,37 @@ func makeFieldTypeByType(typ reflect.Type) *fieldType {
 		reflect.Complex128,
 		reflect.Bool,
 		reflect.String:
-		return &fieldType{ typ.Kind(), nil }
+		return &fieldType{ uint8(typ.Kind()), nil }
 
 	case reflect.Slice:
-		var elemType = makeFieldTypeByType(typ.Elem())
-		return &fieldType{ typ.Kind(), []*fieldType{ elemType } }
+		var elemType = makeFieldTypeByType(typ.Elem(), top, seen)
+		return &fieldType{ uint8(typ.Kind()), []*fieldType{ elemType } }
 
 	case reflect.Ptr:
-		return &fieldType{ reflect.Ptr, []*fieldType { makeFieldTypeByType(typ.Elem()) } }
+
+		for _, seenType := range seen {
+			if typ == seenType {
+				if typ == top {
+					return &fieldType{ uint8(reflect.Ptr), 
+						[]*fieldType{ &fieldType{ RECURSE, nil } } }
+				}
+				panic(fmt.Sprintf("Recursive type! %v, %v (top: %v)", typ, seenType))
+			}
+		}
+
+		seen = append(seen, typ)
+
+		return &fieldType{ uint8(reflect.Ptr), []*fieldType {
+				makeFieldTypeByType(typ.Elem(), top, seen) } }
 
 	case reflect.Struct:
 		var elems = make([]*fieldType, 0, typ.NumField())
 		for i := 0; i < typ.NumField(); i++ {
 			var field = typ.Field(i)
-			var ft = makeFieldTypeByType(field.Type)
+			var ft = makeFieldTypeByType(field.Type, top, seen)
 			elems = append(elems, ft)
 		}
-		return &fieldType{ reflect.Struct, elems }
+		return &fieldType{ uint8(reflect.Struct), elems }
 	}
 
 	panic(fmt.Sprintf("Can't make field type for %v\n", typ.Kind()))
@@ -73,7 +93,11 @@ func makeFieldTypeByType(typ reflect.Type) *fieldType {
 
 
 func encodeField(field interface{}, ft *fieldType, writer *bufio.Writer) {
-	switch ft.Kind {
+	encodeFieldInner(field, ft, ft, writer)
+}
+
+func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer *bufio.Writer) {
+	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
 		reflect.Int16,
 		reflect.Int32,
@@ -118,17 +142,26 @@ func encodeField(field interface{}, ft *fieldType, writer *bufio.Writer) {
 		var sliceLen = val.Len()
 		writeLength(sliceLen, writer)
 		for i := 0; i < sliceLen; i++ {
-			encodeField(val.Index(i).Interface(), ft.Elem[0], writer)
+			encodeFieldInner(val.Index(i).Interface(), ft.Elem[0], ftTop, writer)
 		}
 
 	case reflect.Ptr:
+		if ft.Elem[0].Kind == RECURSE {
+			encodeFieldInner(field, ftTop, ftTop, writer)
+			return
+		}
 		var val = reflect.ValueOf(field)
-		encodeField(val.Elem().Interface(), ft.Elem[0], writer)
+		if val.IsNil() {
+			writer.Write([]byte{ 0 })
+		} else {
+			writer.Write([]byte{ 1 })
+			encodeFieldInner(val.Elem().Interface(), ft.Elem[0], ftTop, writer)
+		}
 
 	case reflect.Struct:
 		var val = reflect.Indirect(reflect.ValueOf(field))
 		for i := 0; i < val.NumField(); i++ {
-			encodeField(val.Field(i).Interface(), ft.Elem[i], writer)
+			encodeFieldInner(val.Field(i).Interface(), ft.Elem[i], ftTop, writer)
 		}
 
 	default:
@@ -145,10 +178,13 @@ func writeLength(length int, writer *bufio.Writer) {
 	}
 }
 
-
 func decodeField(field interface{}, ft *fieldType, reader *bufio.Reader) {
+	decodeFieldInner(field, ft, ft, reader)
+}
+
+func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader *bufio.Reader) {
 	
-	switch ft.Kind {
+	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
 		reflect.Int16,
 		reflect.Int32,
@@ -216,26 +252,39 @@ func decodeField(field interface{}, ft *fieldType, reader *bufio.Reader) {
 		for i := 0; i < elemCount; i++ {
 			slicev = slicev.Slice(0, i)
 			elemp := reflect.New(elemt)
-			decodeField(elemp.Interface(), ft.Elem[0], reader)
+			decodeFieldInner(elemp.Interface(), ft.Elem[0], ftTop, reader)
 			slicev = reflect.Append(slicev, elemp.Elem())
 		}
 
 		resultv.Elem().Set(slicev.Slice(0, elemCount))
 
 	case reflect.Ptr:
-		var val = reflect.ValueOf(field)
-		var target = reflect.Indirect(val)
-		if target.IsNil() {
-			target.Set(reflect.New(target.Type().Elem()))
+		c, err := reader.ReadByte()
+		if err != nil {
+			panic(fmt.Sprintf("Couldn't read ptr nil byte: %v\n", err))
 		}
-		decodeField(target.Interface(), ft.Elem[0], reader)
+		if c != 0 {
+			var val = reflect.ValueOf(field)
+			var target = reflect.Indirect(val)
+
+			if target.IsNil() {
+				target.Set(reflect.New(target.Type().Elem()))
+			}
+
+			if ft.Elem[0].Kind == RECURSE {
+				decodeFieldInner(target.Interface(), ftTop.Elem[0], ftTop, reader)
+				return
+			}
+
+			decodeFieldInner(target.Interface(), ft.Elem[0], ftTop, reader)
+		}
 
 	case reflect.Struct:
 		var val = reflect.ValueOf(field)
 		val = reflect.Indirect(val)
 		for i := 0; i < val.NumField(); i++ {
 			var fieldVal = val.Field(i).Addr()
-			decodeField(fieldVal.Interface(), ft.Elem[i], reader)
+			decodeFieldInner(fieldVal.Interface(), ft.Elem[i], ftTop, reader)
 		}
 
 	default:
