@@ -194,8 +194,8 @@ func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, write
 		}
 
 	case STRUCT_REFERENCE:
-
 		var val = reflect.Indirect(reflect.ValueOf(field))
+
 		var structFt = structs[ft.StructName]
 
 		if val.Type().Kind() == reflect.Map {
@@ -205,6 +205,12 @@ func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, write
 				encodeFieldInner(fieldVal, fieldFt, structs, writer)
 			}
 		} else {
+
+			var valName = val.Type().PkgPath() + "/" + val.Type().Name()
+			if valName != ft.StructName {
+				panic(fmt.Sprintf("Incompatible structs: %s, %s", valName, ft.StructName))
+			}
+
 			for i, fieldFt := range structFt.Elem {
 				encodeFieldInner(val.Field(i).Interface(), fieldFt, structs, writer)
 			}
@@ -371,6 +377,12 @@ func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reade
 				val.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(fieldVal).Elem())
 			}
 		} else {
+
+			var valName = val.Type().PkgPath() + "/" + val.Type().Name()
+			if valName != ft.StructName {
+				panic(fmt.Sprintf("Incompatible structs: %s, %s", valName, ft.StructName))
+			}
+
 			for i, fieldFt := range structFt.Elem {
 				var fieldVal = val.Field(i).Addr()
 				decodeFieldInner(fieldVal.Interface(), fieldFt, structs, reader)

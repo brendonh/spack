@@ -123,10 +123,10 @@ func (vt *VersionedType) AddVersion(vers uint16, exemplar interface{}) error {
 		return &TypeError{ fmt.Sprintf("Version already exists: %s::%d", vt.Name, vers) }
 	}
 
-	// var ft = makeFieldType(exemplar)
+	var ft = makeTypeSpec(exemplar)
 
-	// vt.Versions = append(vt.Versions, &version{ vers, ft })
-	// sort.Sort(vt)
+	vt.Versions = append(vt.Versions, &version{ vers, ft })
+	sort.Sort(vt)
 
 	return nil
 }

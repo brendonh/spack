@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func _TestRegistration(test *testing.T) {
+func TestRegistration(test *testing.T) {
 
 	type st0 struct {
 	}
@@ -33,7 +33,7 @@ func _TestRegistration(test *testing.T) {
 }
 
 
-func _TestEncode(test *testing.T) {
+func TestEncode(test *testing.T) {
 	type st0 struct {
 		Name string
 	}
