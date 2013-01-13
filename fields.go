@@ -8,15 +8,22 @@ import (
 	"strings"
 )
 
+const STRUCT_REFERENCE reflect.Kind = 255
+
 type fieldType struct {
 	Kind uint8
 	Elem []*fieldType
 	Label string
+	StructName string
 }
 
-type typeSet []reflect.Type
+type structMap map[string]*fieldType
 
-const RECURSE = 255
+type typeSpec struct {
+	Structs structMap
+	Top *fieldType
+}
+
 
 func (ft *fieldType) String() string {
 	var inner string
@@ -29,16 +36,19 @@ func (ft *fieldType) String() string {
 		}
 		inner = fmt.Sprintf("[ %s ]", strings.Join(bits, ", "))
 	}
-	return fmt.Sprintf("{ %v, %#v, %v }", ft.Kind, ft.Label, inner)
+	return fmt.Sprintf("{ %v, %#v, %#v, %v }", ft.Kind, ft.Label, ft.StructName, inner)
 }
 
-func makeFieldType(exemplar interface{}) *fieldType {
-	var topType = reflect.TypeOf(exemplar)
-	var seenTypes = make(typeSet, 0)
-	return makeFieldTypeByType(topType, topType, seenTypes)
+func makeTypeSpec(exemplar interface{}) *typeSpec {
+	var structs = make(structMap)
+	var top = makeFieldType(reflect.TypeOf(exemplar), structs)
+	return &typeSpec{
+		Structs: structs,
+		Top: top,
+	}
 }
 
-func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fieldType {
+func makeFieldType(typ reflect.Type, structs structMap) *fieldType {
 
 	switch typ.Kind() {
 	case reflect.Int8,
@@ -55,43 +65,39 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 		reflect.Complex128,
 		reflect.Bool,
 		reflect.String:
-		return &fieldType{ uint8(typ.Kind()), nil, "" }
+		return &fieldType{ uint8(typ.Kind()), nil, "", "" }
 
 	case reflect.Slice:
-		var elemType = makeFieldTypeByType(typ.Elem(), top, seen)
-		return &fieldType{ uint8(reflect.Slice), []*fieldType{ elemType }, "" }
+		var elemType = makeFieldType(typ.Elem(), structs)
+		return &fieldType{ uint8(reflect.Slice), []*fieldType{ elemType }, "", "" }
 
 	case reflect.Ptr:
-
-		for _, seenType := range seen {
-			if typ == seenType {
-				if typ == top {
-					return &fieldType{ uint8(reflect.Ptr), 
-						[]*fieldType{ &fieldType{ RECURSE, nil, "" } }, "" }
-				}
-				panic(fmt.Sprintf("Recursive type! %v, %v", typ, seenType))
-			}
-		}
-
-		seen = append(seen, typ)
-
 		return &fieldType{ uint8(reflect.Ptr), []*fieldType {
-				makeFieldTypeByType(typ.Elem(), top, seen) }, "" }
+				makeFieldType(typ.Elem(), structs) }, "", "" }
 
 	case reflect.Struct:
-		var elems = make([]*fieldType, 0, typ.NumField())
-		for i := 0; i < typ.NumField(); i++ {
-			var field = typ.Field(i)
-			var ft = makeFieldTypeByType(field.Type, top, seen)
-			ft.Label = field.Name
-			elems = append(elems, ft)
+
+		var structName = typ.PkgPath() + "/" + typ.Name()
+		structFt, ok := structs[structName]
+		if !ok {
+			structs[structName] = nil // Avoid reentrance
+			var elems = make([]*fieldType, 0, typ.NumField())
+			for i := 0; i < typ.NumField(); i++ {
+				var field = typ.Field(i)
+				var ft = makeFieldType(field.Type, structs)
+				ft.Label = field.Name
+				elems = append(elems, ft)
+			}
+			structFt = &fieldType{ uint8(reflect.Struct), elems, "", "" }
+			structs[structName] = structFt
 		}
-		return &fieldType{ uint8(reflect.Struct), elems, "" }
+		
+		return &fieldType{ uint8(STRUCT_REFERENCE), nil, "", structName }
 
 	case reflect.Map:
-		var keyType = makeFieldTypeByType(typ.Key(), top, seen)
-		var valType = makeFieldTypeByType(typ.Elem(), top, seen)
-		return &fieldType{ uint8(reflect.Map), []*fieldType{ keyType, valType }, "" } 
+		var keyType = makeFieldType(typ.Key(), structs)
+		var valType = makeFieldType(typ.Elem(), structs)
+		return &fieldType{ uint8(reflect.Map), []*fieldType{ keyType, valType }, "", "" }
 
 	default:
 	}
@@ -100,13 +106,23 @@ func makeFieldTypeByType(typ reflect.Type, top reflect.Type, seen typeSet) *fiel
 
 }
 
-
-func encodeField(field interface{}, ft *fieldType, writer *bufio.Writer) {
-	encodeFieldInner(field, ft, ft, writer)
+func encodeField(field interface{}, ts *typeSpec, writer *bufio.Writer) {
+	encodeFieldInner(field, ts.Top, ts.Structs, writer)
 }
 
+func safeEncodeField(field interface{}, ts *typeSpec, writer *bufio.Writer) (err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = &TypeError{ 
+				fmt.Sprintf("Encoding failed: %v", e),
+			}
+		}
+	}()
+	encodeFieldInner(field, ts.Top, ts.Structs, writer)
+	return nil
+}
 
-func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer *bufio.Writer) {
+func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, writer *bufio.Writer) {
 	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
 		reflect.Int16,
@@ -148,7 +164,7 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 		var sliceLen = val.Len()
 		writeLength(sliceLen, writer)
 		for i := 0; i < sliceLen; i++ {
-			encodeFieldInner(val.Index(i).Interface(), ft.Elem[0], ftTop, writer)
+			encodeFieldInner(val.Index(i).Interface(), ft.Elem[0], structs, writer)
 		}
 
 	case reflect.Map:
@@ -157,16 +173,12 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 		writeLength(keyCount, writer)
 		var keys = val.MapKeys()
 		for _, key := range keys {
-			encodeFieldInner(key.Interface(), ft.Elem[0], ftTop, writer)
+			encodeFieldInner(key.Interface(), ft.Elem[0], structs, writer)
 			var value = val.MapIndex(key)
-			encodeFieldInner(value.Interface(), ft.Elem[1], ftTop, writer)
+			encodeFieldInner(value.Interface(), ft.Elem[1], structs, writer)
 		}
 
 	case reflect.Ptr:
-		if ft.Elem[0].Kind == RECURSE {
-			encodeFieldInner(field, ftTop, ftTop, writer)
-			return
-		}
 
 		var valType = reflect.TypeOf(field)
 		var val = reflect.ValueOf(field)
@@ -178,21 +190,23 @@ func encodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, writer
 			if valType.Kind() == reflect.Ptr {
 				val = val.Elem()
 			}
-			encodeFieldInner(val.Interface(), ft.Elem[0], ftTop, writer)
+			encodeFieldInner(val.Interface(), ft.Elem[0], structs, writer)
 		}
 
-	case reflect.Struct:
+	case STRUCT_REFERENCE:
+
 		var val = reflect.Indirect(reflect.ValueOf(field))
+		var structFt = structs[ft.StructName]
 
 		if val.Type().Kind() == reflect.Map {
 			var mapVal = val.Interface().(map[string]interface{})
-			for _, fieldFt := range ft.Elem {
+			for _, fieldFt := range structFt.Elem {
 				var fieldVal = mapVal[fieldFt.Label]
-				encodeFieldInner(fieldVal, fieldFt, ftTop, writer)
+				encodeFieldInner(fieldVal, fieldFt, structs, writer)
 			}
 		} else {
-			for i := 0; i < val.NumField(); i++ {
-				encodeFieldInner(val.Field(i).Interface(), ft.Elem[i], ftTop, writer)
+			for i, fieldFt := range structFt.Elem {
+				encodeFieldInner(val.Field(i).Interface(), fieldFt, structs, writer)
 			}
 		}
 
@@ -210,11 +224,11 @@ func writeLength(length int, writer *bufio.Writer) {
 	}
 }
 
-func decodeField(field interface{}, ft *fieldType, reader *bufio.Reader) {
-	decodeFieldInner(field, ft, ft, reader)
+func decodeField(field interface{}, ts *typeSpec, reader *bufio.Reader) {
+	decodeFieldInner(field, ts.Top, ts.Structs, reader)
 }
 
-func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader *bufio.Reader) {
+func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reader *bufio.Reader) {
 	
 	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
@@ -292,28 +306,34 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 			}
 
 
-			decodeFieldInner(elemp.Interface(), ft.Elem[0], ftTop, reader)
+			decodeFieldInner(elemp.Interface(), ft.Elem[0], structs, reader)
 			slicev = reflect.Append(slicev, elemp.Elem())
 		}
 
 		resultv.Elem().Set(slicev.Slice(0, elemCount))
 
 	case reflect.Map:
+
 		keyCount64, err := binary.ReadUvarint(reader)
 		if err != nil {
 			panic(fmt.Sprintf("Couldn't read key count: %v\n", err))
 		}
 
 		var keyCount = int(keyCount64)
-		var resultv = reflect.ValueOf(field)
+		var resultv = reflect.ValueOf(field).Elem()
+
+		if resultv.IsNil() {
+			resultv.Set(reflect.MakeMap(resultv.Type()))
+		}
+
 		var keyt = resultv.Type().Key()
 		var valt = resultv.Type().Elem()
 
 		for i := 0; i < keyCount; i++ {
 			var keyp = reflect.New(keyt)
-			decodeFieldInner(keyp.Interface(), ft.Elem[0], ftTop, reader)
+			decodeFieldInner(keyp.Interface(), ft.Elem[0], structs, reader)
 			var valp = reflect.New(valt)
-			decodeFieldInner(valp.Interface(), ft.Elem[1], ftTop, reader)
+			decodeFieldInner(valp.Interface(), ft.Elem[1], structs, reader)
 			resultv.SetMapIndex(keyp.Elem(), valp.Elem())
 		}
 
@@ -323,6 +343,7 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 		if err != nil {
 			panic(fmt.Sprintf("Couldn't read ptr nil byte: %v\n", err))
 		}
+
 		if c != 0 {
 			var val = reflect.ValueOf(field)
 			var target = reflect.Indirect(val)
@@ -331,29 +352,28 @@ func decodeFieldInner(field interface{}, ft *fieldType, ftTop *fieldType, reader
 				target.Set(reflect.New(target.Type().Elem()))
 			}
 
-			if ft.Elem[0].Kind == RECURSE {
-				decodeFieldInner(target.Interface(), ftTop.Elem[0], ftTop, reader)
-				return
-			}
-
-			decodeFieldInner(target.Interface(), ft.Elem[0], ftTop, reader)
+			decodeFieldInner(target.Interface(), ft.Elem[0], structs, reader)
 		}
 
-	case reflect.Struct:
+
+	case STRUCT_REFERENCE:
+
 		var val = reflect.ValueOf(field)
 		val = reflect.Indirect(val)
+		
+		var structFt = structs[ft.StructName]
 
 		if val.Type().Kind() == reflect.Map {
-			for _, fieldFt := range ft.Elem {
+			for _, fieldFt := range structFt.Elem {
 				var key = fieldFt.Label
 				var fieldVal = createMapValue(fieldFt)
-				decodeFieldInner(fieldVal, fieldFt, ftTop, reader)
+				decodeFieldInner(fieldVal, fieldFt, structs, reader)
 				val.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(fieldVal).Elem())
 			}
 		} else {
-			for i := 0; i < val.NumField(); i++ {
+			for i, fieldFt := range structFt.Elem {
 				var fieldVal = val.Field(i).Addr()
-				decodeFieldInner(fieldVal.Interface(), ft.Elem[i], ftTop, reader)
+				decodeFieldInner(fieldVal.Interface(), fieldFt, structs, reader)
 			}
 		}
 

@@ -6,31 +6,17 @@ import (
 	"bufio"
 	"bytes"
 	"reflect"
-	"encoding/json"
+	_ "encoding/json"
 )
 
 
-type TypeTest struct {
-	Exemplar interface{}
-	Kind uint8
-}
-
-type SimpleStruct struct {
-	Name string
-	Count uint32
-}
-
-type NestedStruct struct {
-	Name string
-	Ages []uint8
-	Embedded SimpleStruct
-	Embeddeds []SimpleStruct
-	Simple *SimpleStruct
-	Simples []*SimpleStruct
-}
-	
-
 func TestFieldType(test *testing.T) {
+
+	type TypeTest struct {
+		Exemplar interface{}
+		Kind uint8
+	}
+
 	var tests = []TypeTest {
 		TypeTest{ uint8(123), uint8(reflect.Uint8) },
 		TypeTest{ complex64(123), uint8(reflect.Complex64) },
@@ -38,36 +24,106 @@ func TestFieldType(test *testing.T) {
 	}
 
 	for _, typeTest := range tests {
-		var ft = makeFieldType(typeTest.Exemplar)
-		if ft.Kind != typeTest.Kind {
-			test.Errorf("Kind mismatch: %v vs %v", ft.Kind, typeTest.Kind)
+		var ft = makeTypeSpec(typeTest.Exemplar)
+		if ft.Top.Kind != typeTest.Kind {
+			test.Errorf("Kind mismatch: %v vs %v", ft.Top.Kind, typeTest.Kind)
 		}
 	}
 
-	var ft = makeFieldType([]uint8{1, 2, 3})
-	if ft.Kind != uint8(reflect.Slice) {
-		test.Errorf("Wrong kind for slice: %v\n", ft.Kind)
+	var ft = makeTypeSpec([]uint8{1, 2, 3})
+	if ft.Top.Kind != uint8(reflect.Slice) {
+		test.Errorf("Wrong kind for slice: %v\n", ft.Top.Kind)
 	}
-	if len(ft.Elem) != 1 {
-		test.Errorf("Wrong elem length for slice: %d\n", len(ft.Elem))
+	if len(ft.Top.Elem) != 1 {
+		test.Errorf("Wrong elem length for slice: %d\n", len(ft.Top.Elem))
 	}
 
-	if ft.Elem[0].Kind != uint8(reflect.Uint8) {
-		test.Errorf("Wrong elem for slice: %v\n", ft.Elem[0])
+	if ft.Top.Elem[0].Kind != uint8(reflect.Uint8) {
+		test.Errorf("Wrong elem for slice: %v\n", ft.Top.Elem[0])
 	}
+}
+
+func TestStructSpec(test *testing.T) {
+	type Struct struct {
+		Name string
+	}
+
+	var ft = makeTypeSpec(Struct{})
 	
-	// Just make sure they don't error
-	ft = makeFieldType(SimpleStruct{})
-	ft = makeFieldType(NestedStruct{})
+	if len(ft.Structs) != 1 {
+		test.Error(ft)
+	}
+
+	if ft.Top.Kind != uint8(STRUCT_REFERENCE) {
+		test.Error(ft)
+	}
+}
+
+func TestDirectRecursionSpec(test *testing.T) {
+	type Recursive struct {
+		Inner *Recursive
+	}
+
+	var ft = makeTypeSpec(Recursive{})
+
+	if len(ft.Structs) != 1 {
+		test.Error(ft)
+	}
+
+	if ft.Top.Kind != uint8(STRUCT_REFERENCE) {
+		test.Error(ft)
+	}
+}
+
+func TestDeepRecursiveSpec(test *testing.T) {
+	type Recursive struct {
+		Inner *Recursive
+	}
+
+	type Wrapper struct {
+		Rec *Recursive
+	}
+
+	var ft = makeTypeSpec(Wrapper{})
+
+	if len(ft.Structs) != 2 {
+		test.Error(ft)
+	}
 }
 
 
-type FixedTest struct {
-	Val interface{}
-	Encoding []byte
+
+type _test_mutual_A struct {
+	NameA string
+	MB *_test_mutual_B
 }
+
+type _test_mutual_B struct {
+	NameB string
+	MA *_test_mutual_A
+}
+
+func TestMutualRecursiveSpec(test *testing.T) {
+	var ft = makeTypeSpec(_test_mutual_A{})
+
+	if len(ft.Structs) != 2 {
+		test.Error(ft)
+	}
+
+	ft = makeTypeSpec(_test_mutual_B{})
+
+	if len(ft.Structs) != 2 {
+		test.Error(ft)
+	}
+}
+
 
 func TestFixedSize(test *testing.T) {
+
+	type FixedTest struct {
+		Val interface{}
+		Encoding []byte
+	}
 
 	var tests = []FixedTest {
 		FixedTest{ int8(123), []byte{ 123 } },
@@ -94,7 +150,7 @@ func TestFixedSize(test *testing.T) {
 
 	for _, t := range tests {
 		var typ = reflect.TypeOf(t.Val)
-		var kind = kindType(typ.Kind())
+		var kind = kindSpec(typ.Kind())
 
 		var buf = new(bytes.Buffer)
 		var reader = bufio.NewReader(buf)
@@ -105,7 +161,7 @@ func TestFixedSize(test *testing.T) {
 
 		var enc = buf.Bytes()
 
-		if !compareByteArrays(enc, t.Encoding) {
+		if !reflect.DeepEqual(enc, t.Encoding) {
 			test.Errorf("Encoding wrong for %v::%v: %v vs %v",
 				kind, t.Val, enc, t.Encoding)
 		}
@@ -126,33 +182,34 @@ func TestBool(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	encodeField(true, kindType(reflect.Bool), writer)
+	encodeField(true, kindSpec(reflect.Bool), writer)
 	writer.Flush()
 
-	if !compareByteArrays(buf.Bytes(), []byte { 1 }) {
+	if !reflect.DeepEqual(buf.Bytes(), []byte { 1 }) {
 		test.Errorf("Encoding wrong for true: %v", buf.Bytes())
 	}
 
 	var ret bool
-	decodeField(&ret, kindType(reflect.Bool), reader)
+	decodeField(&ret, kindSpec(reflect.Bool), reader)
 	if !ret {
 		test.Errorf("Decoding wrong for true: %v", ret)
 	}
 
 	buf.Reset()
 
-	encodeField(false, kindType(reflect.Bool), writer)
+	encodeField(false, kindSpec(reflect.Bool), writer)
 	writer.Flush()
 
-	if !compareByteArrays(buf.Bytes(), []byte { 0 }) {
+	if !reflect.DeepEqual(buf.Bytes(), []byte { 0 }) {
 		test.Errorf("Encoding wrong for false: %v", buf.Bytes())
 	}
 
-	decodeField(&ret, kindType(reflect.Bool), reader)
+	decodeField(&ret, kindSpec(reflect.Bool), reader)
 	if ret {
 		test.Errorf("Decoding wrong for false: %v", ret)
 	}
 }
+
 
 func TestString(test *testing.T) {
 	var tryString = func(str string) {
@@ -161,11 +218,11 @@ func TestString(test *testing.T) {
 		var reader = bufio.NewReader(buf)
 		var writer = bufio.NewWriter(buf)
 		
-		encodeField(str, kindType(reflect.String), writer)
+		encodeField(str, kindSpec(reflect.String), writer)
 		writer.Flush()
 
 		var dec string
-		decodeField(&dec, kindType(reflect.String), reader)
+		decodeField(&dec, kindSpec(reflect.String), reader)
 
 		if dec != str {
 			test.Errorf("String roundtrip failed: %v vs %v", str, dec)
@@ -182,13 +239,10 @@ func TestByteSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft = &fieldType{ 
-		uint8(reflect.Slice), 
-		[]*fieldType{ kindType(reflect.Uint8) },
-		"",
-	}
-
 	var orig = []uint8{ 1, 2, 34, 250 }
+
+	var ft = makeTypeSpec(orig)
+
 	var dec = make([]uint8, 0)
 
 	encodeField(orig, ft, writer)
@@ -196,7 +250,7 @@ func TestByteSlice(test *testing.T) {
 	
 	decodeField(&dec, ft, reader)
 	
-	if !compareByteArrays(orig, dec) {
+	if !reflect.DeepEqual(orig, dec) {
 		test.Errorf("Byte slice mismatch: %v vs %v", orig, dec)
 	}
 }
@@ -207,8 +261,8 @@ func TestStringSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.String) }, "" }
 	var orig = []string{ "one", "two", "thirty four" }
+	var ft = makeTypeSpec(orig)
 	var dec = make([]string, 0)
 
 	encodeField(orig, ft, writer)
@@ -216,7 +270,7 @@ func TestStringSlice(test *testing.T) {
 	
 	decodeField(&dec, ft, reader)
 	
-	if !compareStringArrays(orig, dec) {
+	if !reflect.DeepEqual(orig, dec) {
 		test.Errorf("String slice mismatch: %v vs %v", orig, dec)
 	}
 }
@@ -226,15 +280,13 @@ func TestSliceSlice(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 	
-	var ft0 = &fieldType{ uint8(reflect.Slice), []*fieldType{ kindType(reflect.Uint8) }, "" }
-	var ft = &fieldType{ uint8(reflect.Slice), []*fieldType{ ft0 }, "" }
-
 	var orig = [][]uint8{ 
 		[]uint8 { 1, 2, 3 },
 		[]uint8 { 4, 5, 6, 8 },
 		[]uint8 { 8, 9 },
 	}
 
+	var ft = makeTypeSpec(orig)
 	encodeField(orig, ft, writer)
 	writer.Flush()
 
@@ -246,7 +298,7 @@ func TestSliceSlice(test *testing.T) {
 	}
 
 	for i := range orig {
-		if !compareByteArrays(orig[i], dec[i]) {
+		if !reflect.DeepEqual(orig[i], dec[i]) {
 			test.Errorf("Inner slice mismatch: %v vs %v", orig[i], dec[i])
 		}
 	}
@@ -257,21 +309,15 @@ func TestPointer(test *testing.T) {
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var ft = &fieldType{ 
-		uint8(reflect.Ptr), 
-		[]*fieldType{ 
-			&fieldType{ uint8(reflect.Uint8), nil, "" },
-		},
-		"",
-	}
-
 	var orig *uint8 = new(uint8)
 	*orig = 5
+
+	var ft = makeTypeSpec(orig)
 
 	encodeField(orig, ft, writer)
 	writer.Flush()
 
-	if !compareByteArrays(buf.Bytes(), []byte{ 1, 5 }) {
+	if !reflect.DeepEqual(buf.Bytes(), []byte{ 1, 5 }) {
 		test.Errorf("Error encoding pointer to uint8: %v", buf.Bytes())
 	}
 
@@ -284,13 +330,20 @@ func TestPointer(test *testing.T) {
 }
 
 
-func TestStruct(test *testing.T) {
+func TestSimpleStruct(test *testing.T) {
+
+	type SimpleStruct struct {
+		Name string
+		Age uint32
+	}
+
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
 	var st = SimpleStruct{ "Brendon", 31 }
-	var ft = makeFieldType(st)
+	var ft = makeTypeSpec(st)
+
 	encodeField(&st, ft, writer)
 	writer.Flush()
 
@@ -301,206 +354,314 @@ func TestStruct(test *testing.T) {
 		test.Errorf("Wrong name: %v\n", dec.Name)
 	}
 
-	if dec.Count != 31 {
-		test.Errorf("Wrong count: %v\n", dec.Count)
+	if dec.Age != 31 {
+		test.Errorf("Wrong age: %v\n", dec.Age)
 	}	
 }
 
+func TestEmbeddedStruct(test *testing.T) {
+	type Embedded struct {
+		Name string
+		Age uint32
+	}
+	type Top struct {
+		Embed Embedded
+	}
 
-func TestNestedStruct(test *testing.T) {
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var simples = []*SimpleStruct{ 
-		&SimpleStruct{ "Brendon", 31 },
-		&SimpleStruct{ "Ben", 26 },
-		&SimpleStruct{ "Nai", 32 },
-	}
+	var st = Top { Embedded { "Brendon", 31 } }
+	var ft = makeTypeSpec(st)
 
-	var ns = NestedStruct{ 
-		Name: "Some Guys",
-		Ages: []uint8{ 23, 91, 0 },
-		Embedded: *simples[0],
-		Embeddeds: []SimpleStruct { 
-			*simples[0], 
-			*simples[1],
-			*simples[2],
-		},
-		Simple: simples[1],
-		Simples: simples,
-	}
-	var ft = makeFieldType(ns)
-
-	encodeField(&ns, ft, writer)
+	encodeField(&st, ft, writer)
 	writer.Flush()
 
-	var dec = NestedStruct{}
+	var dec = Top{}
 	decodeField(&dec, ft, reader)
 
-	if dec.Name != "Some Guys" {
-		test.Errorf("Wrong name: %v\n", dec.Name)
+	if dec.Embed.Name != "Brendon" {
+		test.Errorf("Wrong name: %v\n", dec.Embed.Name)
 	}
 
-	if !compareByteArrays(dec.Ages, []uint8{ 23, 91, 0 }) {
-		test.Errorf("Wrong ages: %v\n", dec.Ages)
+	if dec.Embed.Age != 31 {
+		test.Errorf("Wrong age: %v\n", dec.Embed.Age)
 	}	
+}
 
-	var testSimple = func(tag string, st *SimpleStruct, name string, count uint32) {
+func TestEmbeddedStructSlice(test *testing.T) {
+	type Embedded struct {
+		Name string
+		Age uint32
+	}
+	type Top struct {
+		Embeds []Embedded
+	}
+
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var st = Top { 
+		[]Embedded{ 
+			Embedded { "Brendon", 31 }, 
+			Embedded { "Ben", 26 },
+			Embedded { "Nai", 32 },
+		},
+	}
+	var ft = makeTypeSpec(st)
+
+	encodeField(&st, ft, writer)
+	writer.Flush()
+
+	var dec = Top{}
+	decodeField(&dec, ft, reader)
+
+	if len(dec.Embeds) != 3 {
+		test.Errorf("Wrong count: %v\n", dec.Embeds)
+	}
+
+	var testEmbed = func(tag string, st *Embedded, name string, age uint32) {
 		if st.Name != name { 
 			test.Errorf("Wrong name for %s: %v\n", tag, st.Name)
 		}
 
-		if st.Count != count { 
-			test.Errorf("Wrong count for %s: %v\n", tag, st.Count)
+		if st.Age != age { 
+			test.Errorf("Wrong age for %s: %v\n", tag, st.Age)
 		}
 	}
 
-	testSimple("embedded", &dec.Embedded, "Brendon", 31)
+	testEmbed("0", &dec.Embeds[0], "Brendon", 31)
+	testEmbed("1", &dec.Embeds[1], "Ben", 26)
+	testEmbed("2", &dec.Embeds[2], "Nai", 32)
 
-	if len(dec.Embeddeds) != 3 {
-		test.Errorf("Wrong embeddeds length: %v\n", len(dec.Embeddeds))
-	}
-
-	testSimple("embeddeds[0]", &dec.Embeddeds[0], "Brendon", 31)
-	testSimple("embeddeds[1]", &dec.Embeddeds[1], "Ben", 26)
-	testSimple("embeddeds[2]", &dec.Embeddeds[2], "Nai", 32)
-
-	testSimple("simple", dec.Simple, "Ben", 26)
-
-	if len(dec.Simples) != 3 {
-		test.Errorf("Wrong simples length: %v\n", len(dec.Simples))
-	}
-
-	testSimple("simples[0]", dec.Simples[0], "Brendon", 31)
-	testSimple("simples[1]", dec.Simples[1], "Ben", 26)
-	testSimple("simples[2]", dec.Simples[2], "Nai", 32)
 }
 
-func TestNilZero(test *testing.T) {
+func TestReferencedStruct(test *testing.T) {
+	type Embedded struct {
+		Name string
+		Age uint32
+	}
+	type Top struct {
+		Embed *Embedded
+	}
+
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var ns = NestedStruct{ 
-		Name: "",
-		Ages: []uint8{},
-		Embedded: SimpleStruct{},
-		Embeddeds: []SimpleStruct{},
-		Simple: nil,
-		Simples: nil,
-	}
-	var ft = makeFieldType(ns)
+	var st = Top { &Embedded { "Brendon", 31 } }
+	var ft = makeTypeSpec(st)
 
-	encodeField(&ns, ft, writer)
+	encodeField(&st, ft, writer)
 	writer.Flush()
 
-	var dec = NestedStruct{}
+	var dec = Top{}
 	decodeField(&dec, ft, reader)
 
-	if dec.Embedded.Name != "" {
-		test.Errorf("Empty embedded name not empty: %v", dec.Embedded.Name)
+	if dec.Embed.Name != "Brendon" {
+		test.Errorf("Wrong name: %v\n", dec.Embed.Name)
 	}
 
-	if len(dec.Embeddeds) != 0 {
-		test.Errorf("Empty embeddeds length not zero: %#v", dec.Embeddeds)
-	}
-
-	if dec.Simple != nil {
-		test.Errorf("Empty simple not nil: %#v", dec.Simple)
-	}
-
-	if dec.Simples != nil {
-		test.Errorf("Empty simples length not zero: %#v", dec.Simples)
-	}
+	if dec.Embed.Age != 31 {
+		test.Errorf("Wrong age: %v\n", dec.Embed.Age)
+	}	
 }
 
+func TestReferencedStructSlice(test *testing.T) {
+	type Embedded struct {
+		Name string
+		Age uint32
+	}
+	type Top struct {
+		Embeds []*Embedded
+	}
 
-func TestFieldTypeEncodeSimple(test *testing.T) {
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var ft = makeFieldType(SimpleStruct{})
-	var ftft = makeFieldType(ft)
+	var st = Top { 
+		[]*Embedded{ 
+			&Embedded { "Brendon", 31 }, 
+			&Embedded { "Ben", 26 },
+			&Embedded { "Nai", 32 },
+		},
+	}
+	var ft = makeTypeSpec(st)
 
-	encodeField(&ft, ftft, writer)
+	encodeField(&st, ft, writer)
 	writer.Flush()
 
-	var dec = &fieldType{}
-	decodeField(&dec, ftft, reader)
+	var dec = Top{}
+	decodeField(&dec, ft, reader)
 
-	if !compareFieldTypes(ft, dec) {
-		test.Errorf("Decoded non-matching field type: %v, %v", ft, dec)
+	if len(dec.Embeds) != 3 {
+		test.Errorf("Wrong count: %v\n", dec.Embeds)
 	}
+
+	var testEmbed = func(tag string, st *Embedded, name string, age uint32) {
+		if st.Name != name { 
+			test.Errorf("Wrong name for %s: %v\n", tag, st.Name)
+		}
+
+		if st.Age != age { 
+			test.Errorf("Wrong age for %s: %v\n", tag, st.Age)
+		}
+	}
+
+	testEmbed("0", dec.Embeds[0], "Brendon", 31)
+	testEmbed("1", dec.Embeds[1], "Ben", 26)
+	testEmbed("2", dec.Embeds[2], "Nai", 32)
 }
 
+func TestNilPointer(test *testing.T) {
+	type NotReallyHere struct{
+		Name string
+	}
 
-func TestFieldTypeEncodeNested(test *testing.T) {
+	type Top struct {
+		Missing *NotReallyHere
+	}
+
+	var st = Top{ nil }
+	var ft = makeTypeSpec(st)
+
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var ft = makeFieldType(NestedStruct{})
-	var ftft = makeFieldType(ft)
-
-	encodeField(&ft, ftft, writer)
+	encodeField(&st, ft, writer)
 	writer.Flush()
 
-	var dec = &fieldType{}
-	decodeField(&dec, ftft, reader)
+	var dec = Top{}
+	decodeField(&dec, ft, reader)
 
-	if !compareFieldTypes(ft, dec) {
-		test.Errorf("Decoded non-matching field type: %v, %v", ft, dec)
+	if dec.Missing != nil {
+		test.Errorf("Wrong decode for nil: %v\n", dec)
 	}
 }
 
 
-func TestFieldTypeFieldTypeEncode(test *testing.T) {
+func TestZeroSlice(test *testing.T) {
+	type Top struct {
+		Stuff []int32
+	}
+
+	var st = Top{ }
+	var ft = makeTypeSpec(st)
+
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var ft = makeFieldType(SimpleStruct{})
-	var ftft = makeFieldType(ft)
-	var ftftft = makeFieldType(ftft)
-
-	encodeField(&ftft, ftftft, writer)
+	encodeField(&st, ft, writer)
 	writer.Flush()
 
-	var dec = &fieldType{}
-	decodeField(&dec, ftftft, reader)
+	var dec = Top{}
+	decodeField(&dec, ft, reader)
 
-	if !compareFieldTypes(ftft, dec) {
-		test.Errorf("Decoded non-matching field type: %v, %v", ft, dec)
-	}
-
-	// Because why not!
-	var ftftftft = makeFieldType(ftftft)
-	if !compareFieldTypes(ftftft, ftftftft) {
-		test.Errorf("Field type type type mismatch: %v", ftftft, ftftftft)
+	if dec.Stuff != nil {
+		test.Errorf("Wrong decode for nil: %v\n", dec)
 	}
 }
 
+func TestDirectRecursion(test *testing.T) {
+	type Recursive struct {
+		Name string
+		Rec *Recursive
+	}
+
+	var st = Recursive {
+		"One",
+		&Recursive {
+			"Two", 
+			&Recursive {
+				"Three",
+				nil,
+			},
+		},
+	}
+	var ft = makeTypeSpec(st)
+
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	encodeField(&st, ft, writer)
+	writer.Flush()
+
+	var dec = Recursive{}
+	decodeField(&dec, ft, reader)
+
+	if dec.Name != "One" || 
+		dec.Rec.Name != "Two" ||
+		dec.Rec.Rec.Name != "Three" ||
+		dec.Rec.Rec.Rec != nil {
+		test.Error(dec)
+	}
+}
+
+func TestMutualRecursion(test *testing.T) {
+	var st = _test_mutual_A {
+		"A1",
+		&_test_mutual_B {
+			"B1", 
+			&_test_mutual_A {
+				"A2",
+				&_test_mutual_B {
+					"B2",
+					nil,
+				},
+			},
+		},
+	}
+
+	var ft = makeTypeSpec(st)
+
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	encodeField(&st, ft, writer)
+	writer.Flush()
+
+	var dec = _test_mutual_A{}
+	decodeField(&dec, ft, reader)
+
+	if dec.NameA != "A1" ||
+		dec.MB.NameB != "B1" ||
+		dec.MB.MA.NameA != "A2" ||
+		dec.MB.MA.MB.NameB != "B2" ||
+		dec.MB.MA.MB.MA != nil {
+		test.Error(dec)
+	}
+}	
 
 func TestMap(test *testing.T) {
+	type Struct struct {
+		Name string
+		Age uint32
+	}
+
+	var orig = map[string]*Struct {
+		"Brend": &Struct { "Brendon", 31 },
+		"Nai": &Struct{ "Nai Yu", 32 },
+	}
+
+	var ft = makeTypeSpec(orig)
+
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
-
-	var orig = map[string]*SimpleStruct {
-		"Brend": &SimpleStruct { "Brendon", 31 },
-		"Nai": &SimpleStruct{ "Nai Yu", 32 },
-	}
-
-	var ft = makeFieldType(orig)
 
 	encodeField(orig, ft, writer)
 	writer.Flush()
 
-	var dec = make(map[string]*SimpleStruct)
+	var dec = make(map[string]*Struct)
 
-	decodeField(dec, ft, reader)
+	decodeField(&dec, ft, reader)
 
 	if len(dec) != 2 {
 		test.Errorf("Wrong key count for decoded map: %v\n", dec)
@@ -515,14 +676,101 @@ func TestMap(test *testing.T) {
 	}
 }
 
+func TestMapField(test *testing.T) {
+	type Struct struct {
+		Map map[string]string
+	}
+
+	var m = map[string]string {
+		"One": "Two",
+		"Three": "Four",
+	}
+	
+	var st = Struct{ m }
+	var ft = makeTypeSpec(st)
+	
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	encodeField(st, ft, writer)
+	writer.Flush()
+
+	var dec = Struct{}
+	decodeField(&dec, ft, reader)
+
+	if len(dec.Map) != 2 ||
+	dec.Map["One"] != "Two" ||
+	dec.Map["Three"] != "Four" {
+		test.Error(dec)
+	}
+}
+
+func TestNilMap(test *testing.T) {
+	type Struct struct {
+		Missing map[string]string
+	}
+
+	var st = Struct{ }
+	var ft = makeTypeSpec(st)
+	
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	encodeField(st, ft, writer)
+	writer.Flush()
+
+	var dec = Struct{}
+
+	decodeField(&dec, ft, reader)
+
+	if len(dec.Missing) != 0 {
+		test.Error(dec)
+	}
+}
+
+
+func TestFieldTypeEncode(test *testing.T) {
+	type Struct struct {
+		Name string
+		Age uint32 
+		Self *Struct
+		Mutual *_test_mutual_A
+	}
+
+	var buf = new(bytes.Buffer)
+	var reader = bufio.NewReader(buf)
+	var writer = bufio.NewWriter(buf)
+
+	var ft = *makeTypeSpec(Struct{})
+	var ftft = makeTypeSpec(ft)
+
+	encodeField(ft, ftft, writer)
+	writer.Flush()
+
+	var dec = typeSpec{}
+	decodeField(&dec, ftft, reader)
+
+	if !reflect.DeepEqual(ft, dec) {
+		test.Errorf("Decoded non-matching field type: \n%v\n%v", ft, dec)
+	}
+}
+
 
 func TestStructAsMap(test *testing.T) {
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var st = SimpleStruct{ "Brendon", 31 }
-	var ft = makeFieldType(st)
+	type Struct struct {
+		Name string
+		Age uint32
+	}
+
+	var st = Struct{ "Brendon", 31 }
+	var ft = makeTypeSpec(st)
+
 	encodeField(&st, ft, writer)
 	writer.Flush()
 
@@ -537,239 +785,53 @@ func TestStructAsMap(test *testing.T) {
 		test.Errorf("Wrong name in map-decoded struct: %v\n", dec["Name"])
 	}
 
-	if dec["Count"] != uint32(31) {
-		test.Errorf("Wrong count in map-decoded struct: %v\n", dec["Count"])
+	if dec["Age"] != uint32(31) {
+		test.Errorf("Wrong age in map-decoded struct: %v\n", dec["Age"])
 	}
 }
 
 
 func TestMapAsStruct(test *testing.T) {
+
+	type Struct struct {
+		Name string
+		Age uint32
+	}
+
+	var ft = makeTypeSpec(Struct{})
+
+	var st = map[string]interface{} {
+		"Name": "Brendon",
+		"Age": 31,
+	}
+
 	var buf = new(bytes.Buffer)
 	var reader = bufio.NewReader(buf)
 	var writer = bufio.NewWriter(buf)
 
-	var st = map[string]interface{} {
-		"Name": "Brendon",
-		"Count": 31,
-	}
-
-	var ft = makeFieldType(SimpleStruct{})
 	encodeField(&st, ft, writer)
 	writer.Flush()
 
-	var dec = SimpleStruct{}
+	var dec = Struct{}
 	decodeField(&dec, ft, reader)
 
 	if dec.Name != "Brendon" {
 		test.Errorf("Wrong name in struct from map: %v\n", dec.Name)
 	}
 
-	if dec.Count != 31 {
-		test.Errorf("Wrong count in struct from map: %v\n", dec.Count)
+	if dec.Age != 31 {
+		test.Errorf("Wrong age in struct from map: %v\n", dec.Age)
 	}
 }
 
-
-func TestNestedStructAsMap(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
-
-	var initSimples = []*SimpleStruct{ 
-		&SimpleStruct{ "Brendon", 31 },
-		&SimpleStruct{ "Ben", 26 },
-		&SimpleStruct{ "Nai", 32 },
-	}
-
-	var ns = NestedStruct{ 
-		Name: "Some Guys",
-		Ages: []uint8{ 23, 91, 0 },
-		Embedded: *initSimples[0],
-		Embeddeds: []SimpleStruct { 
-			*initSimples[0], 
-			*initSimples[1],
-			*initSimples[2],
-		},
-		Simple: initSimples[1],
-		Simples: initSimples,
-	}
-
-	var ft = makeFieldType(ns)
-	encodeField(&ns, ft, writer)
-	writer.Flush()
-
-	var dec = make(map[string]interface{})
-	decodeField(dec, ft, reader)
-
-	if len(dec) != 6 {
-		test.Errorf("Wrong field count in map-decoded struct: %v", dec["Name"])
-	}
-
-	if dec["Name"] != "Some Guys" {
-		test.Errorf("Wrong name in map-decoded struct: %v", dec["Name"])
-	}
-	
-	var ages = dec["Ages"].([]interface{})
-	if len(ages) != 3 {
-		test.Errorf("Wrong ages count in map-decoded struct", ages)
-	}
-
-	if ages[1].(uint8) != 91 {
-		test.Errorf("Wrong age in map-decoded struct", ages[1])
-	}
-
-	var embedded = dec["Embedded"].(map[string]interface{})
-	if len(embedded) != 2 {
-		test.Errorf("Wrong field count in map-decoded embedded: %v", embedded)
-	}
-
-	if embedded["Name"] != "Brendon" {
-		test.Errorf("Wrong name in map-decoded embedded: %v", embedded["Name"])
-	}
-
-	var embeddeds = dec["Embeddeds"].([]interface{})
-	if len(embeddeds) != 3 {
-		test.Errorf("Wrong struct count in map-decoded embeddeds: %v", embeddeds)
-	}
-
-	embedded = embeddeds[1].(map[string]interface{})
-	if embedded["Name"] != "Ben" {
-		test.Errorf("Wrong name in map-decoded embeddeds[1]: %v", embedded["Name"])
-	}
-
-	var simple = dec["Simple"].(map[string]interface{})
-	if len(simple) != 2 {
-		test.Errorf("Wrong field count in map-decoded simple: %v", simple)
-	}
-
-	if simple["Name"] != "Ben" {
-		test.Errorf("Wrong name in map-decoded simple: %v", simple["Name"])
-	}
-
-	var simples = dec["Simples"].([]interface{})
-	if len(simples) != 3 {
-		test.Errorf("Wrong struct count in map-decoded simples: %v", simples)
-	}
-
-	simple = simples[1].(map[string]interface{})
-	if simple["Name"] != "Ben" {
-		test.Errorf("Wrong name in map-decoded simples[1]: %v", simple["Name"])
-	}
-
-	_, err := json.MarshalIndent(dec, "", "  ")
-	if err != nil {
-		test.Errorf("Couldn't json encode dec: %v", err)
-	}
-}
-
-
-func TestMapAsNestedStruct(test *testing.T) {
-	var input = []byte("{ \"Name\": \"BGH\", \"Ages\": [ 1, 2, 3 ], \"Embedded\": { \"Name\": \"E1\", \"Count\": 1 }, \"Embeddeds\": [ ], \"Simple\": null, \"Simples\": [ { \"Name\": \"S1\", \"Count\": 1 }, {\"Name\": \"S2\", \"Count\": 2 } ] }")
-
-	var init interface{}
-	err := json.Unmarshal(input, &init)
-	if err != nil {
-		test.Errorf("Couldn't unmarshall input data: %v", err)
-	}
-
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
-
-	var ft = makeFieldType(NestedStruct{})
-	encodeField(init, ft, writer)
-	writer.Flush()
-
-	var dec = NestedStruct{}
-	decodeField(&dec, ft, reader)
-
-	if dec.Name != "BGH" {
-		test.Errorf("Wrong name: %v\n", dec.Name)
-	}
-
-	if !compareByteArrays(dec.Ages, []uint8{ 1, 2, 3 }) {
-		test.Errorf("Wrong ages: %v\n", dec.Ages)
-	}	
-
-	var testSimple = func(tag string, st *SimpleStruct, name string, count uint32) {
-		if st.Name != name { 
-			test.Errorf("Wrong name for %s: %v\n", tag, st.Name)
-		}
-
-		if st.Count != count { 
-			test.Errorf("Wrong count for %s: %v\n", tag, st.Count)
-		}
-	}
-
-	testSimple("embedded", &dec.Embedded, "E1", 1)
-
-	if len(dec.Embeddeds) != 0 {
-		test.Errorf("Wrong embeddeds length: %v\n", len(dec.Embeddeds))
-	}
-
-	if dec.Simple != nil {
-		test.Errorf("Simple not nil: %v\n", dec.Simple)
-	}
-
-	if len(dec.Simples) != 2 {
-		test.Errorf("Wrong simples length: %v\n", len(dec.Simples))
-	}
-
-	testSimple("simples[0]", dec.Simples[0], "S1", 1)
-	testSimple("simples[1]", dec.Simples[1], "S2", 2)
-}
-
-
-func compareByteArrays(a []byte, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-func compareStringArrays(a []string, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-func compareFieldTypes(a *fieldType, b *fieldType) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	if a.Kind != b.Kind {
-		return false
-	}
-	
-	if len(a.Elem) != len(b.Elem) {
-		return false
-	}
-
-	for i := range a.Elem {
-		if !compareFieldTypes(a.Elem[i], b.Elem[i]) {
-			return false
-		}
-	}
-
-	return true
-}
 
 func kindType(kind reflect.Kind) *fieldType {
-	return &fieldType{ uint8(kind), nil, "" }
+	return &fieldType{ uint8(kind), []*fieldType{}, "", "" }
 }
 
+func kindSpec(kind reflect.Kind) *typeSpec {
+	return &typeSpec{ 
+		Structs: nil,
+		Top: kindType(kind),
+	}
+}
