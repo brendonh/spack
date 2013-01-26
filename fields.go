@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+const IGNORED_FIELD reflect.Kind = 254
 const STRUCT_REFERENCE reflect.Kind = 255
 
 type fieldType struct {
@@ -84,8 +85,16 @@ func makeFieldType(typ reflect.Type, structs structMap) *fieldType {
 			var elems = make([]*fieldType, 0, typ.NumField())
 			for i := 0; i < typ.NumField(); i++ {
 				var field = typ.Field(i)
-				var ft = makeFieldType(field.Type, structs)
-				ft.Label = field.Name
+
+				var ft *fieldType
+
+				if field.Tag.Get("spack") == "ignore" {
+					ft = &fieldType{ uint8(IGNORED_FIELD), nil, field.Name, "" }
+				} else {
+					ft = makeFieldType(field.Type, structs)
+					ft.Label = field.Name
+				}
+
 				elems = append(elems, ft)
 			}
 			structFt = &fieldType{ uint8(reflect.Struct), elems, "", "" }
@@ -123,6 +132,7 @@ func safeEncodeField(field interface{}, ts *typeSpec, writer *bufio.Writer) (err
 }
 
 func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, writer *bufio.Writer) {
+
 	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
 		reflect.Int16,
@@ -193,6 +203,9 @@ func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, write
 			encodeFieldInner(val.Interface(), ft.Elem[0], structs, writer)
 		}
 
+	case IGNORED_FIELD:
+		return
+
 	case STRUCT_REFERENCE:
 		var val = reflect.Indirect(reflect.ValueOf(field))
 
@@ -230,9 +243,23 @@ func writeLength(length int, writer *bufio.Writer) {
 	}
 }
 
+
 func decodeField(field interface{}, ts *typeSpec, reader *bufio.Reader) {
 	decodeFieldInner(field, ts.Top, ts.Structs, reader)
 }
+
+func safeDecodeField(field interface{}, ts *typeSpec, reader *bufio.Reader) (err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = &TypeError{ 
+				fmt.Sprintf("Decoding failed: %v", e),
+			}
+		}
+	}()
+	decodeFieldInner(field, ts.Top, ts.Structs, reader)
+	return nil
+}
+
 
 func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reader *bufio.Reader) {
 	
@@ -361,6 +388,8 @@ func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reade
 			decodeFieldInner(target.Interface(), ft.Elem[0], structs, reader)
 		}
 
+	case IGNORED_FIELD:
+		return
 
 	case STRUCT_REFERENCE:
 
@@ -374,7 +403,11 @@ func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reade
 				var key = fieldFt.Label
 				var fieldVal = createMapValue(fieldFt)
 				decodeFieldInner(fieldVal, fieldFt, structs, reader)
-				val.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(fieldVal).Elem())
+				if fieldVal == nil {
+					val.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(nil))
+				} else {
+					val.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(fieldVal).Elem())
+				}
 			}
 		} else {
 
