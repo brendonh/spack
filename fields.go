@@ -1,6 +1,7 @@
 package spack
 
 import (
+	"bytes"
 	"bufio"
 	"encoding/binary"
 	"fmt"
@@ -20,7 +21,7 @@ type fieldType struct {
 
 type structMap map[string]*fieldType
 
-type typeSpec struct {
+type TypeSpec struct {
 	Structs structMap
 	Top *fieldType
 }
@@ -40,10 +41,10 @@ func (ft *fieldType) String() string {
 	return fmt.Sprintf("{ %v, %#v, %#v, %v }", ft.Kind, ft.Label, ft.StructName, inner)
 }
 
-func makeTypeSpec(exemplar interface{}) *typeSpec {
+func MakeTypeSpec(exemplar interface{}) *TypeSpec {
 	var structs = make(structMap)
 	var top = makeFieldType(reflect.TypeOf(exemplar), structs)
-	return &typeSpec{
+	return &TypeSpec{
 		Structs: structs,
 		Top: top,
 	}
@@ -115,11 +116,11 @@ func makeFieldType(typ reflect.Type, structs structMap) *fieldType {
 
 }
 
-func encodeField(field interface{}, ts *typeSpec, writer *bufio.Writer) {
+func encodeField(field interface{}, ts *TypeSpec, writer *bufio.Writer) {
 	encodeFieldInner(field, ts.Top, ts.Structs, writer)
 }
 
-func safeEncodeField(field interface{}, ts *typeSpec, writer *bufio.Writer) (err error) {
+func SafeEncodeField(field interface{}, ts *TypeSpec, writer *bufio.Writer) (err error) {
 	defer func() {
 		if e := recover(); e != nil {
 			err = &TypeError{ 
@@ -129,6 +130,17 @@ func safeEncodeField(field interface{}, ts *typeSpec, writer *bufio.Writer) (err
 	}()
 	encodeFieldInner(field, ts.Top, ts.Structs, writer)
 	return nil
+}
+
+func EncodeToBytes(field interface{}, ts *TypeSpec) ([]byte, error) {
+	var buf bytes.Buffer
+	var writer = bufio.NewWriter(&buf)
+	var err = SafeEncodeField(field, ts, writer)
+	if err != nil {
+		return nil, err
+	}
+	writer.Flush()
+	return buf.Bytes(), nil
 }
 
 func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, writer *bufio.Writer) {
@@ -244,11 +256,11 @@ func writeLength(length int, writer *bufio.Writer) {
 }
 
 
-func decodeField(field interface{}, ts *typeSpec, reader *bufio.Reader) {
+func decodeField(field interface{}, ts *TypeSpec, reader *bufio.Reader) {
 	decodeFieldInner(field, ts.Top, ts.Structs, reader)
 }
 
-func safeDecodeField(field interface{}, ts *typeSpec, reader *bufio.Reader) (err error) {
+func SafeDecodeField(field interface{}, ts *TypeSpec, reader *bufio.Reader) (err error) {
 	defer func() {
 		if e := recover(); e != nil {
 			err = &TypeError{ 
@@ -260,6 +272,11 @@ func safeDecodeField(field interface{}, ts *typeSpec, reader *bufio.Reader) (err
 	return nil
 }
 
+func DecodeFromBytes(field interface{}, ts *TypeSpec, enc []byte) (err error) {
+	var buf = bytes.NewBuffer(enc)
+	var reader = bufio.NewReader(buf)
+	return SafeDecodeField(field, ts, reader)
+}
 
 func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reader *bufio.Reader) {
 	

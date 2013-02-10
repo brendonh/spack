@@ -24,13 +24,13 @@ func TestFieldType(test *testing.T) {
 	}
 
 	for _, typeTest := range tests {
-		var ft = makeTypeSpec(typeTest.Exemplar)
+		var ft = MakeTypeSpec(typeTest.Exemplar)
 		if ft.Top.Kind != typeTest.Kind {
 			test.Errorf("Kind mismatch: %v vs %v", ft.Top.Kind, typeTest.Kind)
 		}
 	}
 
-	var ft = makeTypeSpec([]uint8{1, 2, 3})
+	var ft = MakeTypeSpec([]uint8{1, 2, 3})
 	if ft.Top.Kind != uint8(reflect.Slice) {
 		test.Errorf("Wrong kind for slice: %v\n", ft.Top.Kind)
 	}
@@ -48,7 +48,7 @@ func TestStructSpec(test *testing.T) {
 		Name string
 	}
 
-	var ft = makeTypeSpec(Struct{})
+	var ft = MakeTypeSpec(Struct{})
 	
 	if len(ft.Structs) != 1 {
 		test.Error(ft)
@@ -64,7 +64,7 @@ func TestDirectRecursionSpec(test *testing.T) {
 		Inner *Recursive
 	}
 
-	var ft = makeTypeSpec(Recursive{})
+	var ft = MakeTypeSpec(Recursive{})
 
 	if len(ft.Structs) != 1 {
 		test.Error(ft)
@@ -84,7 +84,7 @@ func TestDeepRecursiveSpec(test *testing.T) {
 		Rec *Recursive
 	}
 
-	var ft = makeTypeSpec(Wrapper{})
+	var ft = MakeTypeSpec(Wrapper{})
 
 	if len(ft.Structs) != 2 {
 		test.Error(ft)
@@ -104,13 +104,13 @@ type _test_mutual_B struct {
 }
 
 func TestMutualRecursiveSpec(test *testing.T) {
-	var ft = makeTypeSpec(_test_mutual_A{})
+	var ft = MakeTypeSpec(_test_mutual_A{})
 
 	if len(ft.Structs) != 2 {
 		test.Error(ft)
 	}
 
-	ft = makeTypeSpec(_test_mutual_B{})
+	ft = MakeTypeSpec(_test_mutual_B{})
 
 	if len(ft.Structs) != 2 {
 		test.Error(ft)
@@ -152,9 +152,9 @@ func TestFixedSize(test *testing.T) {
 		var typ = reflect.TypeOf(t.Val)
 		var kind = kindSpec(typ.Kind())
 
-		var buf = new(bytes.Buffer)
-		var reader = bufio.NewReader(buf)
-		var writer = bufio.NewWriter(buf)
+		var buf bytes.Buffer
+		var reader = bufio.NewReader(&buf)
+		var writer = bufio.NewWriter(&buf)
 
 		encodeField(t.Val, kind, writer)
 		writer.Flush()
@@ -178,9 +178,9 @@ func TestFixedSize(test *testing.T) {
 }
 
 func TestBool(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer // = new(bytes.Buffer)
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(true, kindSpec(reflect.Bool), writer)
 	writer.Flush()
@@ -214,9 +214,9 @@ func TestBool(test *testing.T) {
 func TestString(test *testing.T) {
 	var tryString = func(str string) {
 
-		var buf = new(bytes.Buffer)
-		var reader = bufio.NewReader(buf)
-		var writer = bufio.NewWriter(buf)
+		var buf bytes.Buffer
+		var reader = bufio.NewReader(&buf)
+		var writer = bufio.NewWriter(&buf)
 		
 		encodeField(str, kindSpec(reflect.String), writer)
 		writer.Flush()
@@ -235,13 +235,13 @@ func TestString(test *testing.T) {
 }
 
 func TestByteSlice(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 	
 	var orig = []uint8{ 1, 2, 34, 250 }
 
-	var ft = makeTypeSpec(orig)
+	var ft = MakeTypeSpec(orig)
 
 	var dec = make([]uint8, 0)
 
@@ -257,13 +257,13 @@ func TestByteSlice(test *testing.T) {
 
 
 func TestStringSlice(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 	
 	var orig = []string{ "one", "two", "thirty four" }
-	var ft = makeTypeSpec(orig)
-	var dec = make([]string, 0)
+	var ft = MakeTypeSpec(orig)
+	var dec []string
 
 	encodeField(orig, ft, writer)
 	writer.Flush()
@@ -276,9 +276,9 @@ func TestStringSlice(test *testing.T) {
 }
 
 func TestSliceSlice(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 	
 	var orig = [][]uint8{ 
 		[]uint8 { 1, 2, 3 },
@@ -286,7 +286,7 @@ func TestSliceSlice(test *testing.T) {
 		[]uint8 { 8, 9 },
 	}
 
-	var ft = makeTypeSpec(orig)
+	var ft = MakeTypeSpec(orig)
 	encodeField(orig, ft, writer)
 	writer.Flush()
 
@@ -305,14 +305,14 @@ func TestSliceSlice(test *testing.T) {
 }
 
 func TestPointer(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	var orig *uint8 = new(uint8)
 	*orig = 5
 
-	var ft = makeTypeSpec(orig)
+	var ft = MakeTypeSpec(orig)
 
 	encodeField(orig, ft, writer)
 	writer.Flush()
@@ -337,12 +337,12 @@ func TestSimpleStruct(test *testing.T) {
 		Age uint32
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	var st = SimpleStruct{ "Brendon", 31 }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -368,12 +368,12 @@ func TestEmbeddedStruct(test *testing.T) {
 		Embed Embedded
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	var st = Top { Embedded { "Brendon", 31 } }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -399,9 +399,9 @@ func TestEmbeddedStructSlice(test *testing.T) {
 		Embeds []Embedded
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer // = new(bytes.Buffer)
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	var st = Top { 
 		[]Embedded{ 
@@ -410,7 +410,7 @@ func TestEmbeddedStructSlice(test *testing.T) {
 			Embedded { "Nai", 32 },
 		},
 	}
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -447,12 +447,12 @@ func TestReferencedStruct(test *testing.T) {
 		Embed *Embedded
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	var st = Top { &Embedded { "Brendon", 31 } }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -478,9 +478,9 @@ func TestReferencedStructSlice(test *testing.T) {
 		Embeds []*Embedded
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	var st = Top { 
 		[]*Embedded{ 
@@ -489,7 +489,7 @@ func TestReferencedStructSlice(test *testing.T) {
 			&Embedded { "Nai", 32 },
 		},
 	}
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -526,11 +526,11 @@ func TestNilPointer(test *testing.T) {
 	}
 
 	var st = Top{ nil }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -550,11 +550,11 @@ func TestZeroSlice(test *testing.T) {
 	}
 
 	var st = Top{ }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer // = new(bytes.Buffer)
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -583,11 +583,11 @@ func TestDirectRecursion(test *testing.T) {
 			},
 		},
 	}
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer // = new(bytes.Buffer)
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -618,11 +618,11 @@ func TestMutualRecursion(test *testing.T) {
 		},
 	}
 
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -650,11 +650,11 @@ func TestMap(test *testing.T) {
 		"Nai": &Struct{ "Nai Yu", 32 },
 	}
 
-	var ft = makeTypeSpec(orig)
+	var ft = MakeTypeSpec(orig)
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(orig, ft, writer)
 	writer.Flush()
@@ -687,11 +687,11 @@ func TestMapField(test *testing.T) {
 	}
 	
 	var st = Struct{ m }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 	
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(st, ft, writer)
 	writer.Flush()
@@ -712,11 +712,11 @@ func TestNilMap(test *testing.T) {
 	}
 
 	var st = Struct{ }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 	
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(st, ft, writer)
 	writer.Flush()
@@ -739,17 +739,17 @@ func TestFieldTypeEncode(test *testing.T) {
 		Mutual *_test_mutual_A
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
-	var ft = *makeTypeSpec(Struct{})
-	var ftft = makeTypeSpec(ft)
+	var ft = *MakeTypeSpec(Struct{})
+	var ftft = MakeTypeSpec(ft)
 
 	encodeField(ft, ftft, writer)
 	writer.Flush()
 
-	var dec = typeSpec{}
+	var dec = TypeSpec{}
 	decodeField(&dec, ftft, reader)
 
 	if !reflect.DeepEqual(ft, dec) {
@@ -759,9 +759,9 @@ func TestFieldTypeEncode(test *testing.T) {
 
 
 func TestStructAsMap(test *testing.T) {
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	type Struct struct {
 		Name string
@@ -769,7 +769,7 @@ func TestStructAsMap(test *testing.T) {
 	}
 
 	var st = Struct{ "Brendon", 31 }
-	var ft = makeTypeSpec(st)
+	var ft = MakeTypeSpec(st)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -798,16 +798,16 @@ func TestMapAsStruct(test *testing.T) {
 		Age uint32
 	}
 
-	var ft = makeTypeSpec(Struct{})
+	var ft = MakeTypeSpec(Struct{})
 
 	var st = map[string]interface{} {
 		"Name": "Brendon",
 		"Age": 31,
 	}
 
-	var buf = new(bytes.Buffer)
-	var reader = bufio.NewReader(buf)
-	var writer = bufio.NewWriter(buf)
+	var buf bytes.Buffer // = new(bytes.Buffer)
+	var reader = bufio.NewReader(&buf)
+	var writer = bufio.NewWriter(&buf)
 
 	encodeField(&st, ft, writer)
 	writer.Flush()
@@ -829,8 +829,8 @@ func kindType(kind reflect.Kind) *fieldType {
 	return &fieldType{ uint8(kind), []*fieldType{}, "", "" }
 }
 
-func kindSpec(kind reflect.Kind) *typeSpec {
-	return &typeSpec{ 
+func kindSpec(kind reflect.Kind) *TypeSpec {
+	return &TypeSpec{ 
 		Structs: nil,
 		Top: kindType(kind),
 	}

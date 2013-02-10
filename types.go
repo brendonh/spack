@@ -13,7 +13,7 @@ type UpgradeFunc func(interface{}) (interface{}, error)
 
 type Version struct {
 	Version uint16
-	Spec *typeSpec
+	Spec *TypeSpec
 	Exemplar interface{} `spack:"ignore"`
 	Upgrader UpgradeFunc `spack:"ignore"`
 }
@@ -22,6 +22,7 @@ type VersionedType struct {
 	Name string
 	Tag uint16
 	Versions []*Version
+	Dirty bool `spack:"ignore"`
 }
 
 type TypeSet struct {
@@ -35,6 +36,15 @@ type TypeError struct {
 
 func (te *TypeError) Error() string {
 	return te.Message
+}
+
+
+func EncodeKey(tag uint16, key string) []byte {
+	var keyBytes = []byte(key)
+	var buf = bytes.NewBuffer(make([]byte, 0, len(keyBytes) + 2))
+	binary.Write(buf, binary.BigEndian, tag)
+	buf.Write(keyBytes)
+	return buf.Bytes()
 }
 
 
@@ -54,19 +64,21 @@ func NewTypeSet() *TypeSet {
 }
 
 func (ts *TypeSet) RegisterType(name string) *VersionedType {
+	t, ok := ts.Types[name]
+	if ok {
+		return t
+	}
+
 	var tag = ts.LastTag + 1
 	ts.LastTag = tag
 
-	t, ok := ts.Types[name]
-	if !ok {
-		t = &VersionedType{
-			Name: name,
-			Tag: tag,
-			Versions: make([]*Version, 0, 1),
-		}
-		ts.Types[name] = t
+	t = &VersionedType{
+		Name: name,
+		Tag: tag,
+		Versions: make([]*Version, 0, 1),
+		Dirty: true,
 	}
-
+	ts.Types[name] = t
 	return t
 }
 
@@ -120,9 +132,10 @@ func (vt *VersionedType) AddVersion(vers uint16, exemplar interface{}, upgrader 
 		return &TypeError{ fmt.Sprintf("Version already exists") }
 	}
 
-	var ft = makeTypeSpec(exemplar)
+	var ft = MakeTypeSpec(exemplar)
 
 	vt.AddVersionObj(&Version{ vers, ft, exemplar, upgrader })
+	vt.Dirty = true
 
 	return nil
 }
@@ -149,13 +162,14 @@ func (vt *VersionedType) GetVersion(version uint16) *Version {
 }
 
 func (vt *VersionedType) EncodeKey(key string) []byte {
-	var keyBytes = []byte(key)
-	var buf = bytes.NewBuffer(make([]byte, 0, len(keyBytes) + 2))
-	binary.Write(buf, binary.BigEndian, vt.Tag)
-	buf.Write(keyBytes)
-	return buf.Bytes()
+	return EncodeKey(vt.Tag, key)
 }
 
+func (vt *VersionedType) EncodeTag() []byte {
+	var buf = bytes.NewBuffer(make([]byte, 0, 2))
+	binary.Write(buf, binary.BigEndian, vt.Tag)
+	return buf.Bytes()
+}
 
 func (vt *VersionedType) DecodeKey(encKey []byte) string {
 	return string(encKey[2:])
@@ -170,12 +184,12 @@ func (vt *VersionedType) EncodeObj(obj interface{}) (enc []byte, err error) {
 
 	var v = vt.Versions[0]
 
-	var buf = new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, v.Version)
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.BigEndian, v.Version)
 
-	var writer = bufio.NewWriter(buf)
+	var writer = bufio.NewWriter(&buf)
 
-	err = safeEncodeField(obj, v.Spec, writer)
+	err = SafeEncodeField(obj, v.Spec, writer)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +222,7 @@ func (vt *VersionedType) DecodeObj(encObj []byte) (obj interface{}, err error) {
 	var target = reflect.New(reflect.TypeOf(v.Exemplar)).Interface()
 
 	var reader = bufio.NewReader(buf)
-	err = safeDecodeField(target, v.Spec, reader)
+	err = SafeDecodeField(target, v.Spec, reader)
 
 	if err != nil {
 		return nil, err
@@ -232,7 +246,7 @@ func (vt *VersionedType) upgradeObj(version uint16, buf *bytes.Buffer) (obj inte
 	}
 
 	var reader = bufio.NewReader(buf)
-	err = safeDecodeField(obj, v.Spec, reader)
+	err = SafeDecodeField(obj, v.Spec, reader)
 
 	if err != nil {
 		return nil, &TypeError{ fmt.Sprintf("Error decoding initial version %d: %v", 
@@ -274,7 +288,7 @@ func (vt *VersionedType) DecodeInto(encObj []byte, obj map[string]interface{}) e
 	}
 
 	var reader = bufio.NewReader(buf)
-	var err = safeDecodeField(obj, v.Spec, reader)
+	var err = SafeDecodeField(obj, v.Spec, reader)
 
 	if err != nil {
 		return err
