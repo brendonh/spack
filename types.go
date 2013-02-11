@@ -9,6 +9,8 @@ import (
 	"reflect"
 )
 
+const BUFFER_SIZE = 256
+
 type UpgradeFunc func(interface{}) (interface{}, error)
 
 type Version struct {
@@ -47,7 +49,6 @@ func EncodeKey(tag uint16, key string) []byte {
 	return buf.Bytes()
 }
 
-
 // -------------------------------
 
 func NewTypeSet() *TypeSet {
@@ -60,7 +61,6 @@ func NewTypeSet() *TypeSet {
 	typeType.AddVersion(0, VersionedType{}, nil)
 
 	return ts
-
 }
 
 func (ts *TypeSet) RegisterType(name string) *VersionedType {
@@ -175,7 +175,6 @@ func (vt *VersionedType) DecodeKey(encKey []byte) string {
 	return string(encKey[2:])
 }
 
-
 func (vt *VersionedType) EncodeObj(obj interface{}) (enc []byte, err error) {
 
 	if len(vt.Versions) == 0 {
@@ -184,16 +183,17 @@ func (vt *VersionedType) EncodeObj(obj interface{}) (enc []byte, err error) {
 
 	var v = vt.Versions[0]
 
-	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, v.Version)
+	var buf = bytes.NewBuffer(make([]byte, 0, BUFFER_SIZE))
+	binary.Write(buf, binary.BigEndian, v.Version)
 
-	var writer = bufio.NewWriter(&buf)
+	var writer = bufio.NewWriter(buf)
 
 	err = SafeEncodeField(obj, v.Spec, writer)
 	if err != nil {
 		return nil, err
 	}
 	writer.Flush()
+
 	return buf.Bytes(), nil
 }
 
