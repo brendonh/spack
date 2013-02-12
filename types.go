@@ -198,10 +198,10 @@ func (vt *VersionedType) EncodeObj(obj interface{}) (enc []byte, err error) {
 }
 
 
-func (vt *VersionedType) DecodeObj(encObj []byte) (obj interface{}, err error) {
+func (vt *VersionedType) DecodeObj(encObj []byte, toMap bool) (obj interface{}, upgraded bool, err error) {
 
 	if len(vt.Versions) == 0 {
-		return nil, &TypeError{ fmt.Sprintf("No versions registered for %s", vt.Name) }
+		return nil, false, &TypeError{ fmt.Sprintf("No versions registered for %s", vt.Name) }
 	}
 
 	var buf = bytes.NewBuffer(encObj)
@@ -216,27 +216,32 @@ func (vt *VersionedType) DecodeObj(encObj []byte) (obj interface{}, err error) {
 	}
 
 	if v.Exemplar == nil {
-		return nil, &TypeError{ fmt.Sprintf("Object version has no exemplar: %d", version) }
+		return nil, false, &TypeError{ fmt.Sprintf("Object version has no exemplar: %d", version) }
 	}
 
-	var target = reflect.New(reflect.TypeOf(v.Exemplar)).Interface()
+	var target interface{}
+	if toMap || v.Exemplar == nil {
+		target = make(map[string]interface{})
+	} else {
+		target = reflect.New(reflect.TypeOf(v.Exemplar)).Interface()
+	}
 
 	var reader = bufio.NewReader(buf)
 	err = SafeDecodeField(target, v.Spec, reader)
 
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return target, nil
+	return target, false, nil
 }
 
 
-func (vt *VersionedType) upgradeObj(version uint16, buf *bytes.Buffer) (obj interface{}, err error) {
+func (vt *VersionedType) upgradeObj(version uint16, buf *bytes.Buffer) (obj interface{}, upgraded bool, err error) {
 	var vIdx, v = vt.getVersion(version)
 
 	if v == nil {
-		return nil, &TypeError{ fmt.Sprintf("Version not registered: %d", version) }
+		return nil, false, &TypeError{ fmt.Sprintf("Version not registered: %d", version) }
 	}
 
 	if v.Exemplar != nil {
@@ -249,7 +254,7 @@ func (vt *VersionedType) upgradeObj(version uint16, buf *bytes.Buffer) (obj inte
 	err = SafeDecodeField(obj, v.Spec, reader)
 
 	if err != nil {
-		return nil, &TypeError{ fmt.Sprintf("Error decoding initial version %d: %v", 
+		return nil, false, &TypeError{ fmt.Sprintf("Error decoding initial version %d: %v", 
 				v.Version, err) }
 	}
 
@@ -257,17 +262,18 @@ func (vt *VersionedType) upgradeObj(version uint16, buf *bytes.Buffer) (obj inte
 		vIdx--
 		var next = vt.Versions[vIdx]
 		if next.Upgrader == nil {
-			return nil, &TypeError{ fmt.Sprintf("No upgrader for %d -> %d (object version %d)", v.Version, next.Version, version) }
+			return nil, false, &TypeError{ fmt.Sprintf("No upgrader for %d -> %d (object version %d)", v.Version, next.Version, version) }
 		}
 
+		fmt.Printf("Upgrading %d -> %d\n", next.Version-1, next.Version)
 		obj, err = next.Upgrader(obj)
 		
 		if err != nil {
-			return nil, &TypeError{ fmt.Sprintf("Upgrader error: %v", err) }
+			return nil, false, &TypeError{ fmt.Sprintf("Upgrader error: %v", err) }
 		}
 	}
 
-	return obj, nil
+	return obj, true, nil
 }
 
 
