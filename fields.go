@@ -226,6 +226,9 @@ func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, write
 		if val.Type().Kind() == reflect.Map {
 			var mapVal = val.Interface().(map[string]interface{})
 			for _, fieldFt := range structFt.Elem {
+				if reflect.Kind(fieldFt.Kind) == IGNORED_FIELD {
+					continue
+				}
 				var fieldVal = mapVal[fieldFt.Label]
 				encodeFieldInner(fieldVal, fieldFt, structs, writer)
 			}
@@ -237,6 +240,11 @@ func encodeFieldInner(field interface{}, ft *fieldType, structs structMap, write
 			}
 
 			for i, fieldFt := range structFt.Elem {
+				// Unexported fields aren't accessible, so we need to
+				// check this here so they can at least be ignored
+				if reflect.Kind(fieldFt.Kind) == IGNORED_FIELD {
+					continue
+				}
 				encodeFieldInner(val.Field(i).Interface(), fieldFt, structs, writer)
 			}
 		}
@@ -279,7 +287,7 @@ func DecodeFromBytes(field interface{}, ts *TypeSpec, enc []byte) (err error) {
 }
 
 func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reader *bufio.Reader) {
-	
+
 	switch reflect.Kind(ft.Kind) {
 	case reflect.Int8,
 		reflect.Int16,
@@ -409,14 +417,17 @@ func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reade
 		return
 
 	case STRUCT_REFERENCE:
-
+		
 		var val = reflect.ValueOf(field)
 		val = reflect.Indirect(val)
-		
+
 		var structFt = structs[ft.StructName]
 
 		if val.Type().Kind() == reflect.Map {
 			for _, fieldFt := range structFt.Elem {
+				if reflect.Kind(fieldFt.Kind) == IGNORED_FIELD {
+					continue
+				}
 				var key = fieldFt.Label
 				var fieldVal = createMapValue(fieldFt)
 				decodeFieldInner(fieldVal, fieldFt, structs, reader)
@@ -434,6 +445,9 @@ func decodeFieldInner(field interface{}, ft *fieldType, structs structMap, reade
 			}
 
 			for i, fieldFt := range structFt.Elem {
+				if reflect.Kind(fieldFt.Kind) == IGNORED_FIELD {
+					continue
+				}
 				var fieldVal = val.Field(i).Addr()
 				decodeFieldInner(fieldVal.Interface(), fieldFt, structs, reader)
 			}
@@ -564,11 +578,10 @@ func createMapValue(ft *fieldType) interface{} {
 		var subVal = createMapValue(ft.Elem[0])
 		return subVal
 
-	case reflect.Struct:
+	case STRUCT_REFERENCE:
 		var val = make(map[string]interface{})
 		return &val
 	}
 
-	return nil
-
+	panic(fmt.Sprintf("Can't create map value for %v\n", ft))
 }

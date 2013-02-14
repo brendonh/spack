@@ -70,7 +70,7 @@ func TestEncodeObj(test *testing.T) {
 		test.Errorf("Encoding error: %v", err)
 	}
 
-	decIF, err := vt.DecodeObj(enc)
+	decIF, _, err := vt.DecodeObj(enc, false)
 
 	if err != nil {
 		test.Errorf("Decoding error: %v\n", err)
@@ -103,7 +103,7 @@ func TestEncodeObj(test *testing.T) {
 		test.Errorf("Encoding error: %v", err)
 	}
 
-	decIF, err = vt.DecodeObj(enc2)
+	decIF, _, err = vt.DecodeObj(enc2, false)
 
 	if err != nil {
 		test.Errorf("Decoding error: %v", err)
@@ -122,7 +122,7 @@ func TestEncodeObj(test *testing.T) {
 		test.Errorf("Map decoding error: %v", err)
 	}
 
-	_, err = vt.DecodeObj(enc)
+	_, _, err = vt.DecodeObj(enc, false)
 
 	if err == nil {
 		test.Errorf("Expected upgrade error")
@@ -198,7 +198,7 @@ func TestUpgrade (test *testing.T) {
 	vt.GetVersion(0).Exemplar = nil
 	vt.GetVersion(1).Exemplar = nil
 
-	out, err := vt.DecodeObj(enc)
+	out, _, err := vt.DecodeObj(enc, false)
 
 	if err != nil {
 		test.Errorf("Error decoding: %v", err)
@@ -210,7 +210,7 @@ func TestUpgrade (test *testing.T) {
 		test.Errorf("Error re-encoding: %v", err)
 	}
 
-	final, err := vt.DecodeObj(enc)
+	final, _, err := vt.DecodeObj(enc, false)
 
 	if err != nil {
 		test.Errorf("Error decoding upgraded: %v", err)
